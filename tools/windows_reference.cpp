@@ -199,11 +199,18 @@ int wmain(int argc, wchar_t** argv) {
           return 9;
         }
         target->SetDpi(96.0f * scale, 96.0f * scale);
+        target->BeginDraw();
+        if (strcmp(background_name, "light") == 0) {
+          target->Clear(D2D1::ColorF(0.965f, 0.969f, 0.973f, 1.0f));
+        } else {
+          target->Clear(D2D1::ColorF(0.09f, 0.098f, 0.11f, 1.0f));
+        }
+        if (FAILED(target->EndDraw())) return 10;
         auto renderer_desc = LumaText::Descriptor<lt_d2d_desc>();
         renderer_desc.render_target = target.Get();
         renderer_desc.manage_begin_end_draw = true;
         LumaText::Renderer renderer;
-        if (lt_d2d_renderer_create(context.get(), &renderer_desc, renderer.put()) != LT_OK) return 10;
+        if (lt_d2d_renderer_create(context.get(), &renderer_desc, renderer.put()) != LT_OK) return 11;
         auto style = LumaText::Descriptor<lt_text_style>();
         style.cascade = cascade.get();
         style.font_size = item.size;
@@ -216,11 +223,11 @@ int wmain(int argc, wchar_t** argv) {
         layout_desc.direction = LT_TEXT_DIRECTION_AUTO;
         layout_desc.max_width = 780.0f;
         LumaText::TextLayout layout;
-        if (lt_text_layout_create(context.get(), &layout_desc, layout.put()) != LT_OK) return 11;
+        if (lt_text_layout_create(context.get(), &layout_desc, layout.put()) != LT_OK) return 12;
         auto frame_desc = LumaText::Descriptor<lt_frame_desc>();
         frame_desc.dpi_x = frame_desc.dpi_y = 96.0f * scale;
         LumaText::Frame draw_frame;
-        if (lt_frame_begin(renderer.get(), &frame_desc, draw_frame.put()) != LT_OK) return 12;
+        if (lt_frame_begin(renderer.get(), &frame_desc, draw_frame.put()) != LT_OK) return 13;
         auto draw = LumaText::Descriptor<lt_draw_text_desc>();
         draw.origin_x = draw.origin_y = 8.0f;
         if (strcmp(background_name, "light") == 0) {
@@ -236,11 +243,11 @@ int wmain(int argc, wchar_t** argv) {
         draw.render_config.coverage_contrast = 1.0f;
         draw.render_config.stem_strength = 0.0f;
         if (lt_frame_draw_text_layout(draw_frame.get(), layout.get(), &draw) != LT_OK ||
-            lt_frame_end(draw_frame.get()) != LT_OK) return 13;
+            lt_frame_end(draw_frame.get()) != LT_OK) return 14;
         const std::string image_name = std::string(item.name) + "__" + background_name +
             "__" + scale_name(scale) + ".png";
         if (!write_png(wic.Get(), bitmap.Get(), output_path / image_name,
-                       pixel_width, pixel_height)) return 14;
+                       pixel_width, pixel_height)) return 15;
 
         auto metrics = LumaText::Descriptor<lt_text_metrics>();
         lt_text_layout_get_metrics(layout.get(), &metrics);

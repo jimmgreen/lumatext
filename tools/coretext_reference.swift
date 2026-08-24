@@ -133,12 +133,11 @@ for item in corpus {
                 bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else {
                 throw NSError(domain: "LumaTextCoreText", code: 4)
             }
-            context.translateBy(x: 0, y: CGFloat(pixelHeight))
-            context.scaleBy(x: scale, y: -scale)
+            context.scaleBy(x: scale, y: scale)
             context.setFillColor(background)
             context.fill(CGRect(x: 0, y: 0, width: widthDIP, height: heightDIP))
             context.textMatrix = .identity
-            context.textPosition = CGPoint(x: 8, y: 8 + ascent)
+            context.textPosition = CGPoint(x: 8, y: heightDIP - 8 - ascent)
             CTLineDraw(line, context)
             guard let image = context.makeImage() else {
                 throw NSError(domain: "LumaTextCoreText", code: 5)
