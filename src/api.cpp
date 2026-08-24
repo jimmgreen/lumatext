@@ -102,6 +102,11 @@ lt_result __cdecl lt_context_create(const lt_context_desc* desc, lt_context** ou
           reinterpret_cast<IUnknown**>(context->dwrite_factory.GetAddressOf()));
       if (FAILED(hr)) return LT_E_INTERNAL;
     }
+    lt::ComPtr<IDWriteTextAnalyzer> text_analyzer;
+    if (FAILED(context->dwrite_factory->CreateTextAnalyzer(&text_analyzer)) ||
+        FAILED(text_analyzer.As(&context->text_analyzer))) {
+      return LT_E_INTERNAL;
+    }
     if (desc->struct_size >= offsetof(lt_context_desc, log_user_data) + sizeof(void*)) {
       context->log_callback = desc->log_callback;
       context->log_user_data = desc->log_user_data;

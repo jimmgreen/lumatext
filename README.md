@@ -1,6 +1,6 @@
 # LumaText
 
-LumaText 是一个面向 Windows 10/11 x64 的 C++20 灰度字体渲染器。DirectWrite 继续负责 shaping、fallback、双向文字、换行、测量和命中测试；LumaText 从同一 `IDWriteTextLayout` 读取 glyph run，通过 DirectWrite font stream 取得字体数据，再由 FreeType 2.13.3 栅格化为灰度覆盖并使用 D2D A8 opacity mask 绘制。
+LumaText 是一个面向 Windows 10/11 x64 的 C++20 灰度字体渲染器。新单行管线使用 HarfBuzz shaping、DirectWrite script/bidi 分析、内置 Unicode 16.0 grapheme 分段和 FreeType 2.13.3 灰度栅格；旧 `IDWriteTextLayout` 绘制路径仍保留用于兼容。
 
 当前版本是 `0.1.0` 阶段 0/1 原型。它用于 Pulse A/B 实机验收，不是方案中的完整 `1.0`：D3D11 atlas、异步冷缓存和单行 TSF 输入尚未实现，相应 API 会明确返回 `LT_E_UNSUPPORTED`。
 
@@ -14,6 +14,7 @@ LumaText 是一个面向 Windows 10/11 x64 的 C++20 灰度字体渲染器。Dir
 - D2D A8 `FillOpacityMask` 后端、裁剪、下划线/删除线、设备线程检查和 `D2DERR_RECREATE_TARGET` 映射。
 - 彩色字体、RTL/sideways 和无法读取的 font run 自动回退 D2D/DirectWrite 绘制，不输出空白 glyph。
 - DLL、静态库、安装包 targets、Win32 A/B 画廊、ABI 测试和离屏像素烟雾测试。
+- 不依赖 ICU；共享库应用只需部署 `lumatext.dll`，静态库将所需 Unicode grapheme 数据直接链接到最终程序。
 
 ## 构建
 
@@ -25,7 +26,11 @@ cmake --build build
 ctest --test-dir build --output-on-failure
 ```
 
-CMake 默认从带 SHA-256 校验的 FreeType `VER-2-13-3` 上游归档构建。也可以设置 `-DLUMATEXT_USE_SYSTEM_FREETYPE=ON` 使用系统包。
+CMake 默认从带 SHA-256 校验的 FreeType `VER-2-13-3` 和 HarfBuzz `10.4.0` 上游归档构建。也可以设置 `-DLUMATEXT_USE_SYSTEM_FREETYPE=ON` 使用系统包。Unicode grapheme 表固定为 16.0.0，可用 `tools/generate_unicode_grapheme_data.py` 从带哈希校验的官方数据重新生成。
+
+只分发 DLL 时可设置 `-DLUMATEXT_BUILD_STATIC=OFF`；安装目录不会包含 FreeType 开发库或头文件，运行时只需 `bin/lumatext.dll`。同时构建静态库时，安装包会保留静态 consumer 所需的 FreeType 开发文件，但最终应用仍没有 ICU 运行时依赖。
+
+为减小发布体积，script 和 bidi 使用 Windows DirectWrite 的系统 Unicode 数据；极少数新脚本或复杂双向文本的分段结果可能随 Windows 版本变化。Grapheme 边界固定为 Unicode 16.0.0，不随系统变化。
 
 画廊位于 `build/samples/gallery/lumatext_gallery.exe`。按 `Space` 切换 A/B 视图，按 `D` 切换浅色/深色背景。
 
@@ -44,4 +49,4 @@ target_link_libraries(my_app PRIVATE LumaText::D2D)
 
 在继续 D3D11 和输入模块之前，必须按 [docs/phase-1-acceptance.md](docs/phase-1-acceptance.md) 在 4K/150% 实机对比签收并冻结默认校准参数。当前 macOS-like 灰度基线使用未 hint 的自然轮廓，默认值为 `gamma=0.43`、`contrast=1.92`、`stem_strength=0.00px`，并按 physical em 与字重执行小字号 optical gamma 校准；实际粗体不会再次增加字干宽度。这仍不代表已经通过视觉验收。
 
-LumaText 自身使用 MIT 许可证。固定依赖 FreeType 使用 FTL；完整许可文本见 [LICENSES/FreeType.txt](LICENSES/FreeType.txt)。本项目不包含任何字体文件。
+LumaText 自身使用 MIT 许可证。固定依赖 FreeType 使用 FTL，HarfBuzz 使用 MIT，Unicode 数据使用 Unicode License v3；完整许可文本位于 `LICENSES`。本项目不包含任何字体文件。

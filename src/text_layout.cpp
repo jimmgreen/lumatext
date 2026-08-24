@@ -62,14 +62,147 @@ struct HbFaceCache {
   }
 };
 
-bool valid_utf16(const char16_t* text, uint32_t length) noexcept {
-  int32_t index = 0;
-  while (index < static_cast<int32_t>(length)) {
-    UChar32 codepoint = 0;
-    U16_NEXT(text, index, static_cast<int32_t>(length), codepoint);
-    if (codepoint < 0) return false;
+class TextAnalysis final : public IDWriteTextAnalysisSource,
+                           public IDWriteTextAnalysisSink {
+ public:
+  TextAnalysis(IDWriteTextAnalyzer1* analyzer, const char16_t* text, uint32_t length,
+               DWRITE_READING_DIRECTION direction)
+      : text_(reinterpret_cast<const wchar_t*>(text)), length_(length),
+        direction_(direction), analyzer_(analyzer),
+        levels_(length, direction == DWRITE_READING_DIRECTION_RIGHT_TO_LEFT),
+        scripts_(length, HB_SCRIPT_COMMON) {}
+
+  const std::vector<uint8_t>& levels() const noexcept { return levels_; }
+  const std::vector<hb_script_t>& scripts() const noexcept { return scripts_; }
+
+  HRESULT STDMETHODCALLTYPE QueryInterface(REFIID iid, void** object) override {
+    if (!object) return E_POINTER;
+    *object = nullptr;
+    if (iid == __uuidof(IUnknown) || iid == __uuidof(IDWriteTextAnalysisSource)) {
+      *object = static_cast<IDWriteTextAnalysisSource*>(this);
+    } else if (iid == __uuidof(IDWriteTextAnalysisSink)) {
+      *object = static_cast<IDWriteTextAnalysisSink*>(this);
+    } else {
+      return E_NOINTERFACE;
+    }
+    AddRef();
+    return S_OK;
   }
-  return true;
+
+  ULONG STDMETHODCALLTYPE AddRef() override { return 1; }
+  ULONG STDMETHODCALLTYPE Release() override { return 1; }
+
+  HRESULT STDMETHODCALLTYPE GetTextAtPosition(UINT32 position, const WCHAR** text,
+                                               UINT32* length) override {
+    if (!text || !length) return E_POINTER;
+    if (position >= length_) {
+      *text = nullptr;
+      *length = 0;
+    } else {
+      *text = text_ + position;
+      *length = length_ - position;
+    }
+    return S_OK;
+  }
+
+  HRESULT STDMETHODCALLTYPE GetTextBeforePosition(UINT32 position, const WCHAR** text,
+                                                   UINT32* length) override {
+    if (!text || !length) return E_POINTER;
+    if (position == 0 || position > length_) {
+      *text = nullptr;
+      *length = 0;
+    } else {
+      *text = text_;
+      *length = position;
+    }
+    return S_OK;
+  }
+
+  DWRITE_READING_DIRECTION STDMETHODCALLTYPE GetParagraphReadingDirection() override {
+    return direction_;
+  }
+
+  HRESULT STDMETHODCALLTYPE GetLocaleName(UINT32 position, UINT32* length,
+                                           const WCHAR** locale) override {
+    if (!length || !locale || position > length_) return E_INVALIDARG;
+    *length = length_ - position;
+    *locale = L"";
+    return S_OK;
+  }
+
+  HRESULT STDMETHODCALLTYPE GetNumberSubstitution(
+      UINT32 position, UINT32* length, IDWriteNumberSubstitution** substitution) override {
+    if (!length || !substitution || position > length_) return E_INVALIDARG;
+    *length = length_ - position;
+    *substitution = nullptr;
+    return S_OK;
+  }
+
+  HRESULT STDMETHODCALLTYPE SetScriptAnalysis(
+      UINT32 position, UINT32 length, const DWRITE_SCRIPT_ANALYSIS* analysis) override {
+    if (!analysis || position > length_ || length > length_ - position) return E_INVALIDARG;
+    DWRITE_SCRIPT_PROPERTIES properties{};
+    hb_script_t script = HB_SCRIPT_UNKNOWN;
+    if (SUCCEEDED(analyzer_->GetScriptProperties(*analysis, &properties))) {
+      script = hb_script_from_iso15924_tag(static_cast<hb_tag_t>(properties.isoScriptCode));
+    }
+    std::fill(scripts_.begin() + position, scripts_.begin() + position + length, script);
+    return S_OK;
+  }
+  HRESULT STDMETHODCALLTYPE SetLineBreakpoints(
+      UINT32, UINT32, const DWRITE_LINE_BREAKPOINT*) override { return S_OK; }
+  HRESULT STDMETHODCALLTYPE SetNumberSubstitution(
+      UINT32, UINT32, IDWriteNumberSubstitution*) override { return S_OK; }
+
+  HRESULT STDMETHODCALLTYPE SetBidiLevel(UINT32 position, UINT32 length,
+                                         UINT8, UINT8 resolved_level) override {
+    if (position > length_ || length > length_ - position) return E_INVALIDARG;
+    std::fill(levels_.begin() + position, levels_.begin() + position + length,
+              resolved_level);
+    return S_OK;
+  }
+
+ private:
+  const wchar_t* text_ = nullptr;
+  uint32_t length_ = 0;
+  DWRITE_READING_DIRECTION direction_ = DWRITE_READING_DIRECTION_LEFT_TO_RIGHT;
+  IDWriteTextAnalyzer1* analyzer_ = nullptr;
+  std::vector<uint8_t> levels_;
+  std::vector<hb_script_t> scripts_;
+};
+
+DWRITE_READING_DIRECTION paragraph_direction(const char16_t* text, uint32_t length,
+                                              lt_text_direction requested) {
+  if (requested == LT_TEXT_DIRECTION_RTL) return DWRITE_READING_DIRECTION_RIGHT_TO_LEFT;
+  if (requested == LT_TEXT_DIRECTION_LTR || length == 0) {
+    return DWRITE_READING_DIRECTION_LEFT_TO_RIGHT;
+  }
+  std::vector<WORD> types(length);
+  if (GetStringTypeW(CT_CTYPE2, reinterpret_cast<const wchar_t*>(text),
+                     static_cast<int>(length), types.data())) {
+    for (WORD type : types) {
+      if (type == C2_LEFTTORIGHT) return DWRITE_READING_DIRECTION_LEFT_TO_RIGHT;
+      if (type == C2_RIGHTTOLEFT) {
+        return DWRITE_READING_DIRECTION_RIGHT_TO_LEFT;
+      }
+    }
+  }
+  return DWRITE_READING_DIRECTION_LEFT_TO_RIGHT;
+}
+
+lt_result analyze_text(lt_context* context, const char16_t* text, uint32_t length,
+                       lt_text_direction requested, std::vector<lt::unicode::BidiRun>& runs,
+                       std::vector<hb_script_t>& scripts) {
+  if (length == 0) return LT_OK;
+  TextAnalysis analysis(context->text_analyzer.Get(), text, length,
+                        paragraph_direction(text, length, requested));
+  if (FAILED(context->text_analyzer->AnalyzeScript(&analysis, 0, length, &analysis)) ||
+      FAILED(context->text_analyzer->AnalyzeBidi(&analysis, 0, length, &analysis))) {
+    return LT_E_INTERNAL;
+  }
+  runs = lt::unicode::visual_bidi_runs(analysis.levels());
+  scripts = analysis.scripts();
+  return LT_OK;
 }
 
 bool style_valid(const lt_text_style& style) noexcept {
@@ -94,24 +227,20 @@ lt::OwnedStyle copy_style(const lt_text_style& source) {
   return result;
 }
 
-hb_script_t script_for_cluster(const char16_t* text, uint32_t start,
-                               uint32_t end, hb_script_t inherited) noexcept {
-  int32_t index = static_cast<int32_t>(start);
-  while (index < static_cast<int32_t>(end)) {
-    UChar32 codepoint = 0;
-    U16_NEXT(text, index, static_cast<int32_t>(end), codepoint);
-    UErrorCode error = U_ZERO_ERROR;
-    const UScriptCode code = uscript_getScript(codepoint, &error);
-    if (U_SUCCESS(error) && code != USCRIPT_COMMON && code != USCRIPT_INHERITED &&
-        code != USCRIPT_UNKNOWN) {
-      const char* name = uscript_getShortName(code);
-      return name ? hb_script_from_string(name, -1) : HB_SCRIPT_UNKNOWN;
+hb_script_t script_for_cluster(const std::vector<hb_script_t>& scripts,
+                               uint32_t start, uint32_t end,
+                               hb_script_t inherited) noexcept {
+  for (uint32_t index = start; index < end; ++index) {
+    const hb_script_t script = scripts[index];
+    if (script != HB_SCRIPT_COMMON && script != HB_SCRIPT_INHERITED &&
+        script != HB_SCRIPT_UNKNOWN) {
+      return script;
     }
   }
   return inherited == HB_SCRIPT_UNKNOWN ? HB_SCRIPT_COMMON : inherited;
 }
 
-bool ignorable_for_coverage(UChar32 codepoint) noexcept {
+bool ignorable_for_coverage(char32_t codepoint) noexcept {
   return codepoint == 0x200c || codepoint == 0x200d ||
       (codepoint >= 0xfe00 && codepoint <= 0xfe0f) ||
       (codepoint >= 0xe0100 && codepoint <= 0xe01ef);
@@ -122,13 +251,17 @@ bool face_covers(HbFaceCache& cache, lt_font_face* face,
   hb_font_t* font = cache.make_font(face, 16.0f);
   if (!font) return false;
   bool covered = true;
-  int32_t index = static_cast<int32_t>(start);
-  while (index < static_cast<int32_t>(end)) {
-    UChar32 codepoint = 0;
-    U16_NEXT(text, index, static_cast<int32_t>(end), codepoint);
+  uint32_t index = start;
+  while (index < end) {
+    lt::unicode::Codepoint codepoint;
+    if (!lt::unicode::next_utf16(text, end, index, codepoint)) {
+      covered = false;
+      break;
+    }
     hb_codepoint_t glyph = 0;
-    if (!ignorable_for_coverage(codepoint) &&
-        !hb_font_get_nominal_glyph(font, static_cast<hb_codepoint_t>(codepoint), &glyph)) {
+    if (!ignorable_for_coverage(codepoint.value) &&
+        !hb_font_get_nominal_glyph(
+            font, static_cast<hb_codepoint_t>(codepoint.value), &glyph)) {
       covered = false;
       break;
     }
@@ -319,14 +452,14 @@ lt_result __cdecl lt_text_layout_create(lt_context* context,
     return LT_E_INVALID_ARGUMENT;
   }
   const auto* input = reinterpret_cast<const char16_t*>(desc->text);
-  if (!valid_utf16(input, desc->text_length)) return LT_E_INVALID_ARGUMENT;
+  if (!lt::unicode::validate_utf16(input, desc->text_length)) return LT_E_INVALID_ARGUMENT;
   const auto start_time = std::chrono::steady_clock::now();
 
   try {
     auto layout = std::make_unique<lt_text_layout>();
     layout->context = context;
     context->retain();
-    layout->text.assign(input, input + desc->text_length);
+    if (desc->text_length != 0) layout->text.assign(input, input + desc->text_length);
     layout->metrics.struct_size = sizeof(layout->metrics);
     layout->metrics.abi_version = LT_ABI_VERSION;
     layout->metrics.line_count = 1;
@@ -354,16 +487,9 @@ lt_result __cdecl lt_text_layout_create(lt_context* context,
                 static_cast<uint32_t>(styles.size() - 1));
     }
 
-    UErrorCode error = U_ZERO_ERROR;
-    UBreakIterator* breaks = ubrk_open(UBRK_CHARACTER, desc->locale,
-        reinterpret_cast<const UChar*>(input), static_cast<int32_t>(desc->text_length), &error);
-    if (U_FAILURE(error) || !breaks) return LT_E_INTERNAL;
-    std::vector<uint32_t> boundaries;
-    for (int32_t value = ubrk_first(breaks); value != UBRK_DONE; value = ubrk_next(breaks)) {
-      boundaries.push_back(static_cast<uint32_t>(value));
-    }
-    ubrk_close(breaks);
-    if (boundaries.empty()) boundaries.push_back(0);
+    std::vector<uint32_t> boundaries =
+        lt::unicode::grapheme_boundaries(input, desc->text_length);
+    if (boundaries.empty()) return LT_E_INTERNAL;
 
     for (uint32_t index = 0; index < desc->style_span_count; ++index) {
       const auto& span = desc->style_spans[index];
@@ -374,17 +500,11 @@ lt_result __cdecl lt_text_layout_create(lt_context* context,
       }
     }
 
-    UBiDi* bidi = ubidi_openSized(static_cast<int32_t>(desc->text_length), 0, &error);
-    if (U_FAILURE(error) || !bidi) return LT_E_INTERNAL;
-    UBiDiLevel level = UBIDI_DEFAULT_LTR;
-    if (desc->direction == LT_TEXT_DIRECTION_LTR) level = 0;
-    if (desc->direction == LT_TEXT_DIRECTION_RTL) level = 1;
-    ubidi_setPara(bidi, reinterpret_cast<const UChar*>(input),
-                  static_cast<int32_t>(desc->text_length), level, nullptr, &error);
-    if (U_FAILURE(error)) {
-      ubidi_close(bidi);
-      return LT_E_INTERNAL;
-    }
+    std::vector<lt::unicode::BidiRun> bidi_runs;
+    std::vector<hb_script_t> scripts;
+    const lt_result analysis_result = analyze_text(
+        context, input, desc->text_length, desc->direction, bidi_runs, scripts);
+    if (analysis_result != LT_OK) return analysis_result;
 
     HbFaceCache cache;
     hb_language_t language = hb_language_from_string(
@@ -392,18 +512,10 @@ lt_result __cdecl lt_text_layout_create(lt_context* context,
     float pen = 0.0f;
     float ascent = 0.0f;
     float descent = 0.0f;
-    const int32_t bidi_run_count = ubidi_countRuns(bidi, &error);
-    if (U_FAILURE(error)) {
-      ubidi_close(bidi);
-      return LT_E_INTERNAL;
-    }
-    for (int32_t visual = 0; visual < bidi_run_count; ++visual) {
-      int32_t logical_start = 0;
-      int32_t logical_length = 0;
-      const UBiDiDirection bidi_direction = ubidi_getVisualRun(
-          bidi, visual, &logical_start, &logical_length);
-      const uint32_t run_start = static_cast<uint32_t>(logical_start);
-      const uint32_t run_end = run_start + static_cast<uint32_t>(logical_length);
+    for (const lt::unicode::BidiRun& bidi_run : bidi_runs) {
+      const uint32_t run_start = bidi_run.start;
+      const uint32_t run_end = bidi_run.end;
+      const bool right_to_left = (bidi_run.level & 1u) != 0;
       std::vector<uint32_t> run_boundaries;
       run_boundaries.push_back(run_start);
       for (uint32_t boundary : boundaries) {
@@ -424,12 +536,11 @@ lt_result __cdecl lt_text_layout_create(lt_context* context,
         const uint32_t start = run_boundaries[cluster];
         const uint32_t end = run_boundaries[cluster + 1];
         const uint32_t style_index = start < style_indices.size() ? style_indices[start] : 0;
-        const hb_script_t script = script_for_cluster(input, start, end, inherited_script);
+        const hb_script_t script = script_for_cluster(scripts, start, end, inherited_script);
         if (script != HB_SCRIPT_COMMON && script != HB_SCRIPT_INHERITED &&
             script != HB_SCRIPT_UNKNOWN) inherited_script = script;
         lt_font_face* face = select_face(cache, styles[style_index], input, start, end);
         if (!face) {
-          ubidi_close(bidi);
           context->log(1, "No face in the cascade covers a grapheme cluster");
           return LT_E_FONT_UNAVAILABLE;
         }
@@ -441,22 +552,17 @@ lt_result __cdecl lt_text_layout_create(lt_context* context,
           segments.push_back({start, end, style_index, script, face});
         }
       }
-      if (bidi_direction == UBIDI_RTL) std::reverse(segments.begin(), segments.end());
+      if (right_to_left) std::reverse(segments.begin(), segments.end());
       for (const auto& segment : segments) {
         lt::ShapedRun shaped;
         const lt_result result = shape_segment(cache, input, desc->text_length,
-            segment.start, segment.end, bidi_direction == UBIDI_RTL, segment.script,
+            segment.start, segment.end, right_to_left, segment.script,
             language, styles[segment.style], segment.face, pen, shaped, ascent, descent);
-        if (result != LT_OK) {
-          ubidi_close(bidi);
-          return result;
-        }
+        if (result != LT_OK) return result;
         layout->metrics.glyph_count += static_cast<uint32_t>(shaped.glyphs.size());
         layout->runs.push_back(std::move(shaped));
       }
     }
-    ubidi_close(bidi);
-
     layout->metrics.width = pen;
     layout->metrics.ascent = ascent;
     layout->metrics.descent = descent;

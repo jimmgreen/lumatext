@@ -33,12 +33,21 @@ target_compile_options(lumatext_color_glyph_test PRIVATE
   $<$<CXX_COMPILER_ID:MSVC>:/utf-8>)
 add_test(NAME color_glyph COMMAND lumatext_color_glyph_test)
 
+add_executable(lumatext_unicode_test unicode_test.cpp ../src/unicode.cpp)
+target_include_directories(lumatext_unicode_test PRIVATE ${CMAKE_SOURCE_DIR}/src)
+target_compile_options(lumatext_unicode_test PRIVATE
+  $<$<CXX_COMPILER_ID:MSVC>:/W4 /permissive- /EHsc /utf-8>)
+if(LUMATEXT_UNICODE_TEST_DATA)
+  add_test(NAME unicode COMMAND lumatext_unicode_test "${LUMATEXT_UNICODE_TEST_DATA}")
+else()
+  add_test(NAME unicode COMMAND lumatext_unicode_test)
+endif()
+
 if(TARGET lumatext_static)
   add_executable(lumatext_rasterizer_bounds_test rasterizer_bounds_test.cpp)
   target_include_directories(lumatext_rasterizer_bounds_test PRIVATE
     ${CMAKE_SOURCE_DIR}/src
     "${harfbuzz_SOURCE_DIR}/src"
-    "${icu4c_SOURCE_DIR}/include"
     "${freetype_SOURCE_DIR}/include")
   target_link_libraries(lumatext_rasterizer_bounds_test PRIVATE
     lumatext_static d2d1 windowscodecs ole32)

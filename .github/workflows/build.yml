@@ -8,11 +8,21 @@ on:
 jobs:
   windows-x64:
     runs-on: windows-2022
+    env:
+      GRAPHEME_TEST_URL: https://www.unicode.org/Public/16.0.0/ucd/auxiliary/GraphemeBreakTest.txt
+      GRAPHEME_TEST_SHA256: ee2b9354d270ac061b29f09662cafea06341d77e704b8cc6bd72aaeeda363cb5
     strategy:
       matrix:
         configuration: [Debug, Release]
     steps:
       - uses: actions/checkout@v4
+      - name: Download pinned Unicode 16.0 grapheme tests
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force out/unicode | Out-Null
+          Invoke-WebRequest $env:GRAPHEME_TEST_URL -OutFile out/unicode/GraphemeBreakTest.txt
+          $hash = (Get-FileHash out/unicode/GraphemeBreakTest.txt -Algorithm SHA256).Hash.ToLower()
+          if ($hash -ne $env:GRAPHEME_TEST_SHA256) { throw 'grapheme test hash mismatch' }
       - name: Configure
         run: >-
           cmake -S . -B build -G "Visual Studio 17 2022" -A x64
@@ -20,6 +30,7 @@ jobs:
           -DLUMATEXT_BUILD_STATIC=ON
           -DLUMATEXT_BUILD_SAMPLES=ON
           -DLUMATEXT_BUILD_TESTS=ON
+          -DLUMATEXT_UNICODE_TEST_DATA=${{ github.workspace }}/out/unicode/GraphemeBreakTest.txt
       - name: Build
         run: cmake --build build --config ${{ matrix.configuration }} --parallel
       - name: Test
@@ -33,6 +44,13 @@ jobs:
           -DCMAKE_PREFIX_PATH=${{ github.workspace }}/out/install
       - name: Build package consumer
         run: cmake --build out/package-smoke --config ${{ matrix.configuration }} --parallel
+      - name: Verify ICU-free package and isolated shared consumer
+        shell: pwsh
+        run: |
+          & out/package-smoke/${{ matrix.configuration }}/lumatext_package_static_smoke.exe
+          ./tools/verify_windows_package.ps1 `
+            -InstallDirectory out/install `
+            -ConsumerExecutable out/package-smoke/${{ matrix.configuration }}/lumatext_package_shared_smoke.exe
 
   coretext-reference:
     runs-on: macos-15
@@ -96,6 +114,13 @@ jobs:
           -DLUMATEXT_BUILD_REFERENCE_TOOLS=ON
       - name: Build LumaText reference renderer
         run: cmake --build build --config Release --parallel
+      - name: Verify minimal shared-only install
+        shell: pwsh
+        run: |
+          cmake --install build --config Release --prefix out/install-shared
+          ./tools/verify_windows_package.ps1 -InstallDirectory out/install-shared
+          if (Test-Path out/install-shared/include/freetype2) { throw 'shared-only install contains FreeType headers' }
+          if (Test-Path out/install-shared/lib/freetype.lib) { throw 'shared-only install contains FreeType library' }
       - name: Generate LumaText references
         run: >-
           build/Release/lumatext_reference_win.exe

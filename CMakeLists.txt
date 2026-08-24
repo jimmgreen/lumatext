@@ -16,6 +16,8 @@ option(LUMATEXT_BUILD_SAMPLES "Build sample applications" ON)
 option(LUMATEXT_BUILD_TESTS "Build tests" ON)
 option(LUMATEXT_BUILD_REFERENCE_TOOLS "Build CI reference tools" OFF)
 option(LUMATEXT_USE_SYSTEM_FREETYPE "Use an installed FreeType package" OFF)
+set(LUMATEXT_UNICODE_TEST_DATA "" CACHE FILEPATH
+  "Optional path to Unicode GraphemeBreakTest.txt")
 
 if(NOT LUMATEXT_BUILD_SHARED AND NOT LUMATEXT_BUILD_STATIC)
   message(FATAL_ERROR "Enable at least one of LUMATEXT_BUILD_SHARED or LUMATEXT_BUILD_STATIC")
@@ -25,20 +27,6 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL")
-
-FetchContent_Declare(
-  icu4c
-  URL https://github.com/unicode-org/icu/releases/download/release-77-1/icu4c-77_1-Win64-MSVC2022.zip
-  URL_HASH SHA256=6b62471ed2895959d6a85c64c58572ac677734547fe8383e6e3fd706a06dc3fa
-  DOWNLOAD_EXTRACT_TIMESTAMP TRUE
-  SOURCE_SUBDIR cmake-not-used)
-FetchContent_MakeAvailable(icu4c)
-
-add_library(lumatext_icu_uc SHARED IMPORTED GLOBAL)
-set_target_properties(lumatext_icu_uc PROPERTIES
-  IMPORTED_IMPLIB "${icu4c_SOURCE_DIR}/lib64/icuuc.lib"
-  IMPORTED_LOCATION "${icu4c_SOURCE_DIR}/bin64/icuuc77.dll"
-  INTERFACE_INCLUDE_DIRECTORIES "${icu4c_SOURCE_DIR}/include")
 
 FetchContent_Declare(
   harfbuzz
@@ -60,6 +48,9 @@ if(LUMATEXT_USE_SYSTEM_FREETYPE)
   find_package(Freetype 2.13.3 REQUIRED)
   set(LUMATEXT_FREETYPE_LINK Freetype::Freetype)
 else()
+  if(NOT LUMATEXT_BUILD_STATIC)
+    set(SKIP_INSTALL_ALL ON)
+  endif()
   set(FT_DISABLE_BROTLI ON CACHE BOOL "" FORCE)
   set(FT_DISABLE_BZIP2 ON CACHE BOOL "" FORCE)
   set(FT_DISABLE_HARFBUZZ ON CACHE BOOL "" FORCE)
@@ -87,7 +78,8 @@ set(LUMATEXT_SOURCES
   src/font_bridge.cpp
   src/line_renderer.cpp
   src/rasterizer.cpp
-  src/text_layout.cpp)
+  src/text_layout.cpp
+  src/unicode.cpp)
 
 function(lumatext_configure_target target)
   target_sources(${target} PRIVATE ${LUMATEXT_SOURCES})
@@ -102,15 +94,10 @@ function(lumatext_configure_target target)
     $<$<CXX_COMPILER_ID:MSVC>:/W4 /permissive- /EHsc /utf-8>)
   target_link_libraries(${target} PRIVATE
     lumatext_harfbuzz ${LUMATEXT_FREETYPE_LINK}
-    lumatext_icu_uc d2d1 dwrite dxgi ole32)
+    d2d1 dwrite dxgi ole32)
   set_target_properties(${target} PROPERTIES
     OUTPUT_NAME lumatext
     DEBUG_POSTFIX d)
-  add_custom_command(TARGET ${target} POST_BUILD
-    COMMAND ${CMAKE_COMMAND} -E copy_if_different
-      "${icu4c_SOURCE_DIR}/bin64/icuuc77.dll"
-      "${icu4c_SOURCE_DIR}/bin64/icudt77.dll"
-      "$<TARGET_FILE_DIR:${target}>")
 endfunction()
 
 if(LUMATEXT_BUILD_SHARED)
@@ -127,7 +114,7 @@ if(LUMATEXT_BUILD_STATIC)
   set_target_properties(lumatext_static PROPERTIES
     OUTPUT_NAME lumatext_static
     EXPORT_NAME Static
-    INTERFACE_LINK_LIBRARIES "Freetype::Freetype;lumatext_icu_uc;d2d1;dwrite;dxgi;ole32")
+    INTERFACE_LINK_LIBRARIES "Freetype::Freetype;d2d1;dwrite;dxgi;ole32")
 endif()
 
 if(TARGET lumatext_shared)
@@ -157,22 +144,24 @@ add_library(LumaText::D3D11 ALIAS lumatext_d3d11)
 add_library(LumaText::Input ALIAS lumatext_input)
 
 function(lumatext_stage_runtime_dependencies target)
-  set(runtime_files
-    "${icu4c_SOURCE_DIR}/bin64/icuuc77.dll"
-    "${icu4c_SOURCE_DIR}/bin64/icudt77.dll")
+  set(runtime_files)
   set(runtime_dependencies)
   if(TARGET lumatext_shared)
     list(APPEND runtime_files "$<TARGET_FILE:lumatext_shared>")
     list(APPEND runtime_dependencies lumatext_shared)
   endif()
   set(runtime_target "${target}_runtime")
-  add_custom_target(${runtime_target} ALL
-    COMMAND ${CMAKE_COMMAND} -E make_directory
-      "$<TARGET_FILE_DIR:${target}>"
-    COMMAND ${CMAKE_COMMAND} -E copy_if_different
-      ${runtime_files}
-      "$<TARGET_FILE_DIR:${target}>"
-    DEPENDS ${runtime_dependencies})
+  if(runtime_files)
+    add_custom_target(${runtime_target} ALL
+      COMMAND ${CMAKE_COMMAND} -E make_directory
+        "$<TARGET_FILE_DIR:${target}>"
+      COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        ${runtime_files}
+        "$<TARGET_FILE_DIR:${target}>"
+      DEPENDS ${runtime_dependencies})
+  else()
+    add_custom_target(${runtime_target} ALL)
+  endif()
   add_dependencies(${target} ${runtime_target})
 endfunction()
 
@@ -190,7 +179,6 @@ if(LUMATEXT_BUILD_REFERENCE_TOOLS)
   target_include_directories(lumatext_reference_win PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src
     "${harfbuzz_SOURCE_DIR}/src"
-    "${icu4c_SOURCE_DIR}/include"
     "${freetype_SOURCE_DIR}/include")
   target_compile_definitions(lumatext_reference_win PRIVATE
     NOMINMAX WIN32_LEAN_AND_MEAN UNICODE _UNICODE)
@@ -229,11 +217,7 @@ install(FILES
   ${CMAKE_CURRENT_BINARY_DIR}/LumaTextConfigVersion.cmake
   DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/LumaText)
 install(FILES LICENSE LICENSES/FreeType.txt DESTINATION ${CMAKE_INSTALL_DATADIR}/LumaText/licenses)
-install(FILES LICENSES/HarfBuzz.txt LICENSES/ICU.txt
+install(FILES LICENSES/HarfBuzz.txt
   DESTINATION ${CMAKE_INSTALL_DATADIR}/LumaText/licenses)
-install(FILES
-  "${icu4c_SOURCE_DIR}/bin64/icuuc77.dll"
-  "${icu4c_SOURCE_DIR}/bin64/icudt77.dll"
-  DESTINATION ${CMAKE_INSTALL_BINDIR})
-install(FILES "${icu4c_SOURCE_DIR}/lib64/icuuc.lib"
-  DESTINATION ${CMAKE_INSTALL_LIBDIR})
+install(FILES LICENSES/Unicode.txt
+  DESTINATION ${CMAKE_INSTALL_DATADIR}/LumaText/licenses)

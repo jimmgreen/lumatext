@@ -4,6 +4,7 @@
 
 #include <d2d1.h>
 #include <dwrite.h>
+#include <dwrite_1.h>
 #include <wrl/client.h>
 
 #include <ft2build.h>
@@ -15,10 +16,7 @@
 #include <hb.h>
 #include <hb-ot.h>
 
-#include <unicode/ubidi.h>
-#include <unicode/ubrk.h>
-#include <unicode/uscript.h>
-#include <unicode/utf16.h>
+#include "unicode.hpp"
 
 #include <algorithm>
 #include <atomic>
@@ -172,6 +170,7 @@ struct OwnedStyle {
 
 struct lt_context final : lt::Object {
   lt::ComPtr<IDWriteFactory> dwrite_factory;
+  lt::ComPtr<IDWriteTextAnalyzer1> text_analyzer;
   lt_log_callback log_callback = nullptr;
   void* log_user_data = nullptr;
   lt_glyph_ready_callback glyph_ready_callback = nullptr;
