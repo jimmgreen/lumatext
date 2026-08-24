@@ -22,6 +22,7 @@ struct RenderRecord: Codable {
     let scale: Double
     let background: String
     let image: String
+    let mask: String
     let width: Double
     let ascent: Double
     let descent: Double
@@ -108,7 +109,9 @@ guard let colorSpace = CGColorSpace(name: CGColorSpace.sRGB),
       let lightForeground = CGColor(colorSpace: colorSpace,
           components: [0.09, 0.098, 0.11, 1]),
       let darkForeground = CGColor(colorSpace: colorSpace,
-          components: [0.91, 0.918, 0.929, 1]) else {
+          components: [0.91, 0.918, 0.929, 1]),
+      let maskForeground = CGColor(colorSpace: colorSpace,
+          components: [1, 1, 1, 1]) else {
     throw NSError(domain: "LumaTextCoreText", code: 4,
                   userInfo: [NSLocalizedDescriptionKey: "cannot create sRGB colors"])
 }
@@ -153,6 +156,27 @@ for item in corpus {
             let imageName = "\(item.name)__\(backgroundName)__\(scaleName).png"
             try writePNG(image, to: outputURL.appendingPathComponent(imageName))
 
+            let maskAttributed = NSAttributedString(string: item.text, attributes: [
+                NSAttributedString.Key(kCTFontAttributeName as String): font,
+                NSAttributedString.Key(kCTForegroundColorAttributeName as String): maskForeground
+            ])
+            let maskLine = CTLineCreateWithAttributedString(maskAttributed)
+            guard let maskContext = CGContext(data: nil, width: pixelWidth, height: pixelHeight,
+                bitsPerComponent: 8, bytesPerRow: pixelWidth * 4, space: colorSpace,
+                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else {
+                throw NSError(domain: "LumaTextCoreText", code: 6)
+            }
+            maskContext.scaleBy(x: scale, y: scale)
+            maskContext.clear(CGRect(x: 0, y: 0, width: widthDIP, height: heightDIP))
+            maskContext.textMatrix = .identity
+            maskContext.textPosition = CGPoint(x: 8, y: heightDIP - 8 - ascent)
+            CTLineDraw(maskLine, maskContext)
+            guard let maskImage = maskContext.makeImage() else {
+                throw NSError(domain: "LumaTextCoreText", code: 7)
+            }
+            let maskName = "\(item.name)__\(backgroundName)__\(scaleName).mask.png"
+            try writePNG(maskImage, to: outputURL.appendingPathComponent(maskName))
+
             var glyphRecords: [GlyphRecord] = []
             let runs = CTLineGetGlyphRuns(line) as! [CTRun]
             for run in runs {
@@ -176,7 +200,7 @@ for item in corpus {
             }
             records.append(.init(name: item.name, text: item.text, weight: item.weight,
                 size: Double(item.size), scale: Double(scale), background: backgroundName,
-                image: imageName, width: Double(lineWidth), ascent: Double(ascent),
+                image: imageName, mask: maskName, width: Double(lineWidth), ascent: Double(ascent),
                 descent: Double(descent), leading: Double(leading), glyphs: glyphRecords,
                 fallbackCase: item.fallback))
         }

@@ -249,6 +249,38 @@ int wmain(int argc, wchar_t** argv) {
         if (!write_png(wic.Get(), bitmap.Get(), output_path / image_name,
                        pixel_width, pixel_height)) return 15;
 
+        lt::ComPtr<IWICBitmap> mask_bitmap;
+        lt::ComPtr<ID2D1RenderTarget> mask_target;
+        if (FAILED(wic->CreateBitmap(pixel_width, pixel_height,
+                GUID_WICPixelFormat32bppPBGRA, WICBitmapCacheOnLoad, &mask_bitmap)) ||
+            FAILED(d2d->CreateWicBitmapRenderTarget(mask_bitmap.Get(),
+                D2D1::RenderTargetProperties(), &mask_target))) {
+          return 16;
+        }
+        mask_target->SetDpi(96.0f * scale, 96.0f * scale);
+        mask_target->BeginDraw();
+        mask_target->Clear(D2D1::ColorF(0.0f, 0.0f, 0.0f, 0.0f));
+        if (FAILED(mask_target->EndDraw())) return 17;
+        auto mask_renderer_desc = LumaText::Descriptor<lt_d2d_desc>();
+        mask_renderer_desc.render_target = mask_target.Get();
+        mask_renderer_desc.manage_begin_end_draw = true;
+        LumaText::Renderer mask_renderer;
+        if (lt_d2d_renderer_create(context.get(), &mask_renderer_desc,
+                                    mask_renderer.put()) != LT_OK) return 18;
+        LumaText::Frame mask_frame;
+        if (lt_frame_begin(mask_renderer.get(), &frame_desc, mask_frame.put()) != LT_OK) return 19;
+        auto mask_draw = LumaText::Descriptor<lt_draw_text_desc>();
+        mask_draw.origin_x = mask_draw.origin_y = 8.0f;
+        mask_draw.foreground = {1.0f, 1.0f, 1.0f, 1.0f};
+        mask_draw.background_type = LT_BACKGROUND_TRANSPARENT;
+        mask_draw.render_config = draw.render_config;
+        if (lt_frame_draw_text_layout(mask_frame.get(), layout.get(), &mask_draw) != LT_OK ||
+            lt_frame_end(mask_frame.get()) != LT_OK) return 20;
+        const std::string mask_name = std::string(item.name) + "__" + background_name +
+            "__" + scale_name(scale) + ".mask.png";
+        if (!write_png(wic.Get(), mask_bitmap.Get(), output_path / mask_name,
+                       pixel_width, pixel_height)) return 21;
+
         auto metrics = LumaText::Descriptor<lt_text_metrics>();
         lt_text_layout_get_metrics(layout.get(), &metrics);
         if (!first_record) manifest << ",\n";
@@ -258,6 +290,7 @@ int wmain(int argc, wchar_t** argv) {
                  << ",\"weight\":" << item.weight << ",\"size\":" << item.size
                  << ",\"scale\":" << scale << ",\"background\":"
                  << json_string(background_name) << ",\"image\":" << json_string(image_name)
+                 << ",\"mask\":" << json_string(mask_name)
                  << ",\"width\":" << metrics.width << ",\"ascent\":" << metrics.ascent
                  << ",\"descent\":" << metrics.descent << ",\"leading\":"
                  << metrics.leading << ",\"fallbackCase\":false,\"glyphs\":[";

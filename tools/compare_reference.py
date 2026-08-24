@@ -10,18 +10,9 @@ from PIL import Image
 from skimage.metrics import structural_similarity
 
 
-LIGHT_BG = np.array([0.965, 0.969, 0.973], dtype=np.float32)
-DARK_BG = np.array([0.09, 0.098, 0.11], dtype=np.float32)
-LIGHT_FG = np.array([0.09, 0.098, 0.11], dtype=np.float32)
-DARK_FG = np.array([0.91, 0.918, 0.929], dtype=np.float32)
-
-
-def coverage(image_path: pathlib.Path, background: str) -> np.ndarray:
-    image = np.asarray(Image.open(image_path).convert("RGB"), dtype=np.float32) / 255.0
-    bg = LIGHT_BG if background == "light" else DARK_BG
-    fg = LIGHT_FG if background == "light" else DARK_FG
-    denominator = max(float(np.mean(np.abs(fg - bg))), 1e-6)
-    return np.clip(np.mean(np.abs(image - bg), axis=2) / denominator, 0.0, 1.0)
+def coverage(mask_path: pathlib.Path) -> np.ndarray:
+    image = np.asarray(Image.open(mask_path).convert("RGBA"), dtype=np.float32) / 255.0
+    return image[:, :, 3]
 
 
 def shifted(source: np.ndarray, dx: int, dy: int) -> np.ndarray:
@@ -94,8 +85,8 @@ def main() -> int:
     for key in sorted(core_records.keys() & luma_records.keys()):
         core = core_records[key]
         luma = luma_records[key]
-        reference = coverage(args.coretext / core["image"], core["background"])
-        candidate = coverage(args.lumatext / luma["image"], luma["background"])
+        reference = coverage(args.coretext / core["mask"])
+        candidate = coverage(args.lumatext / luma["mask"])
         if reference.shape != candidate.shape:
             raise RuntimeError(f"image dimensions differ for {key}")
         dx, dy, candidate = align(reference, candidate)
