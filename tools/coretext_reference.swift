@@ -100,10 +100,18 @@ let corpus: [CorpusCase] = [
     .init(name: "hebrew_14_fallback", text: "קובץ Quick 123", size: 14, weight: 400, fallback: true)
 ]
 let scales: [CGFloat] = [1.0, 1.25, 1.5, 2.0, 3.0]
-let lightBackground = CGColor(red: 0.965, green: 0.969, blue: 0.973, alpha: 1)
-let darkBackground = CGColor(red: 0.09, green: 0.098, blue: 0.11, alpha: 1)
-let lightForeground = CGColor(red: 0.09, green: 0.098, blue: 0.11, alpha: 1)
-let darkForeground = CGColor(red: 0.91, green: 0.918, blue: 0.929, alpha: 1)
+guard let colorSpace = CGColorSpace(name: CGColorSpace.sRGB),
+      let lightBackground = CGColor(colorSpace: colorSpace,
+          components: [0.965, 0.969, 0.973, 1]),
+      let darkBackground = CGColor(colorSpace: colorSpace,
+          components: [0.09, 0.098, 0.11, 1]),
+      let lightForeground = CGColor(colorSpace: colorSpace,
+          components: [0.09, 0.098, 0.11, 1]),
+      let darkForeground = CGColor(colorSpace: colorSpace,
+          components: [0.91, 0.918, 0.929, 1]) else {
+    throw NSError(domain: "LumaTextCoreText", code: 4,
+                  userInfo: [NSLocalizedDescriptionKey: "cannot create sRGB colors"])
+}
 var records: [RenderRecord] = []
 
 for item in corpus {
@@ -127,7 +135,6 @@ for item in corpus {
             let heightDIP: CGFloat = 80
             let pixelWidth = Int(ceil(widthDIP * scale))
             let pixelHeight = Int(ceil(heightDIP * scale))
-            let colorSpace = CGColorSpaceCreateDeviceRGB()
             guard let context = CGContext(data: nil, width: pixelWidth, height: pixelHeight,
                 bitsPerComponent: 8, bytesPerRow: pixelWidth * 4, space: colorSpace,
                 bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else {
