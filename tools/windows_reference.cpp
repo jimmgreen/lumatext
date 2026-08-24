@@ -239,8 +239,8 @@ int wmain(int argc, wchar_t** argv) {
         }
         draw.background_type = LT_BACKGROUND_SOLID;
         draw.render_config = LumaText::Descriptor<lt_render_config>();
-        draw.render_config.coverage_gamma = 1.0f;
-        draw.render_config.coverage_contrast = 1.0f;
+        draw.render_config.coverage_gamma = 0.43f;
+        draw.render_config.coverage_contrast = 1.92f;
         draw.render_config.stem_strength = 0.0f;
         if (lt_frame_draw_text_layout(draw_frame.get(), layout.get(), &draw) != LT_OK ||
             lt_frame_end(draw_frame.get()) != LT_OK) return 14;

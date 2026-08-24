@@ -119,13 +119,13 @@ bool create_typography_resources() {
 
   auto profile_desc = LumaText::Descriptor<lt_render_profile_desc>();
   profile_desc.light = LumaText::Descriptor<lt_render_config>();
-  profile_desc.light.coverage_gamma = 1.00f;
-  profile_desc.light.coverage_contrast = 1.00f;
-  profile_desc.light.stem_strength = 0.06f;
+  profile_desc.light.coverage_gamma = 0.43f;
+  profile_desc.light.coverage_contrast = 1.92f;
+  profile_desc.light.stem_strength = 0.00f;
   profile_desc.dark = LumaText::Descriptor<lt_render_config>();
-  profile_desc.dark.coverage_gamma = 0.98f;
-  profile_desc.dark.coverage_contrast = 1.00f;
-  profile_desc.dark.stem_strength = 0.05f;
+  profile_desc.dark.coverage_gamma = 0.43f;
+  profile_desc.dark.coverage_contrast = 1.92f;
+  profile_desc.dark.stem_strength = 0.00f;
   profile_desc.regular_optical_weight = 0.06f;
   profile_desc.bold_optical_weight = 0.0f;
   return lt_render_profile_create(&profile_desc, app.profile.put()) == LT_OK;
@@ -174,9 +174,9 @@ void draw_lumatext(const lt_text_layout* layout, float x, float y,
   draw.background = {background.r, background.g, background.b, background.a};
   draw.background_type = LT_BACKGROUND_SOLID;
   draw.render_config = LumaText::Descriptor<lt_render_config>();
-  draw.render_config.coverage_gamma = 1.00f;
-  draw.render_config.coverage_contrast = 1.00f;
-  draw.render_config.stem_strength = 0.06f;
+  draw.render_config.coverage_gamma = 0.43f;
+  draw.render_config.coverage_contrast = 1.92f;
+  draw.render_config.stem_strength = 0.00f;
   draw.profile = app.profile.get();
   lt_frame_draw_text_layout(frame.get(), layout, &draw);
   auto stats = LumaText::Descriptor<lt_frame_stats>();

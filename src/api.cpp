@@ -20,9 +20,9 @@ lt_render_config default_render_config() noexcept {
   lt_render_config result{};
   result.struct_size = sizeof(result);
   result.abi_version = LT_ABI_VERSION;
-  result.coverage_gamma = 1.00f;
-  result.coverage_contrast = 1.00f;
-  result.stem_strength = 0.06f;
+  result.coverage_gamma = 0.43f;
+  result.coverage_contrast = 1.92f;
+  result.stem_strength = 0.00f;
   return result;
 }
 

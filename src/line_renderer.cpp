@@ -19,10 +19,15 @@ lt::GlyphKey make_key(const lt::ShapedRun& run, const lt::ShapedGlyph& glyph,
   key.dpi_x = static_cast<uint16_t>(std::clamp(std::lround(dpi_x), 1l, 65535l));
   key.dpi_y = static_cast<uint16_t>(std::clamp(std::lround(dpi_y), 1l, 65535l));
   key.x_phase = static_cast<uint8_t>(phase);
+  const float physical_em = run.font_size * dpi_y / 96.0f;
+  const float optical_gamma = run.weight >= 600
+      ? std::max(0.0f, 20.0f - physical_em) * 0.0094f
+      : 0.015f + std::max(0.0f, 18.0f - physical_em) * 0.018f;
   key.gamma_64 = static_cast<uint8_t>(std::clamp(
-      std::lround(lt::finite_or(config.coverage_gamma, 1.0f) * 64.0f), 16l, 192l));
+      std::lround((lt::finite_or(config.coverage_gamma, 0.43f) + optical_gamma) * 64.0f),
+      16l, 192l));
   key.contrast_64 = static_cast<uint8_t>(std::clamp(
-      std::lround(lt::finite_or(config.coverage_contrast, 1.0f) * 64.0f), 16l, 192l));
+      std::lround(lt::finite_or(config.coverage_contrast, 1.92f) * 64.0f), 16l, 192l));
   const float stem = (config.flags & LT_RENDER_CONFIG_DISABLE_STEM_COMPENSATION) ||
       run.weight >= 600 ? 0.0f : std::max(0.0f, lt::finite_or(config.stem_strength, 0.0f));
   key.stem_64 = static_cast<uint8_t>(std::clamp(std::lround(stem * 64.0f), 0l, 64l));

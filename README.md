@@ -42,6 +42,6 @@ target_link_libraries(my_app PRIVATE LumaText::D2D)
 
 ## 验收闸门
 
-在继续 D3D11 和输入模块之前，必须按 [docs/phase-1-acceptance.md](docs/phase-1-acceptance.md) 在 4K/150% 实机对比签收并冻结默认校准参数。当前 macOS-like 灰度基线使用未 hint 的自然轮廓，默认值为 `gamma=1.00`、`contrast=1.00`、`stem_strength=0.06px`；实际粗体不会再次增加字干宽度。这仍不代表已经通过视觉验收。
+在继续 D3D11 和输入模块之前，必须按 [docs/phase-1-acceptance.md](docs/phase-1-acceptance.md) 在 4K/150% 实机对比签收并冻结默认校准参数。当前 macOS-like 灰度基线使用未 hint 的自然轮廓，默认值为 `gamma=0.43`、`contrast=1.92`、`stem_strength=0.00px`，并按 physical em 与字重执行小字号 optical gamma 校准；实际粗体不会再次增加字干宽度。这仍不代表已经通过视觉验收。
 
 LumaText 自身使用 MIT 许可证。固定依赖 FreeType 使用 FTL；完整许可文本见 [LICENSES/FreeType.txt](LICENSES/FreeType.txt)。本项目不包含任何字体文件。
