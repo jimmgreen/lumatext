@@ -7,7 +7,7 @@ on:
 
 jobs:
   windows-x64:
-    runs-on: windows-latest
+    runs-on: windows-2022
     strategy:
       matrix:
         configuration: [Debug, Release]
@@ -39,8 +39,8 @@ jobs:
     env:
       NOTO_REGULAR_URL: https://raw.githubusercontent.com/notofonts/noto-cjk/Sans2.004/Sans/OTF/SimplifiedChinese/NotoSansCJKsc-Regular.otf
       NOTO_BOLD_URL: https://raw.githubusercontent.com/notofonts/noto-cjk/Sans2.004/Sans/OTF/SimplifiedChinese/NotoSansCJKsc-Bold.otf
-      NOTO_REGULAR_SHA256: 41595827b2bc0d83d089e65f5a6f9e6a2f518119b385132b39b4b5fd115552e8
-      NOTO_BOLD_SHA256: de7aa5dbf3136a7d07c2e30b1fe7dce154e7ae9a73a63c55c2ac3db5e0b445d2
+      NOTO_REGULAR_SHA256: 2c76254f6fc379fddfce0a7e84fb5385bb135d3e399294f6eeb6680d0365b74b
+      NOTO_BOLD_SHA256: b5f0d1a190a7f9b43c310a8850630af12553df32c4c050543f9059732d9b4c0a
     steps:
       - uses: actions/checkout@v4
       - name: Download pinned Noto Sans CJK 2.004
@@ -65,13 +65,13 @@ jobs:
           if-no-files-found: error
 
   coretext-compare:
-    runs-on: windows-latest
+    runs-on: windows-2022
     needs: coretext-reference
     env:
       NOTO_REGULAR_URL: https://raw.githubusercontent.com/notofonts/noto-cjk/Sans2.004/Sans/OTF/SimplifiedChinese/NotoSansCJKsc-Regular.otf
       NOTO_BOLD_URL: https://raw.githubusercontent.com/notofonts/noto-cjk/Sans2.004/Sans/OTF/SimplifiedChinese/NotoSansCJKsc-Bold.otf
-      NOTO_REGULAR_SHA256: 41595827b2bc0d83d089e65f5a6f9e6a2f518119b385132b39b4b5fd115552e8
-      NOTO_BOLD_SHA256: de7aa5dbf3136a7d07c2e30b1fe7dce154e7ae9a73a63c55c2ac3db5e0b445d2
+      NOTO_REGULAR_SHA256: 2c76254f6fc379fddfce0a7e84fb5385bb135d3e399294f6eeb6680d0365b74b
+      NOTO_BOLD_SHA256: b5f0d1a190a7f9b43c310a8850630af12553df32c4c050543f9059732d9b4c0a
     steps:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
