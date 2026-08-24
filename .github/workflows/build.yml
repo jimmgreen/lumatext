@@ -1,0 +1,119 @@
+name: build
+
+on:
+  workflow_dispatch:
+  push:
+  pull_request:
+
+jobs:
+  windows-x64:
+    runs-on: windows-latest
+    strategy:
+      matrix:
+        configuration: [Debug, Release]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure
+        run: >-
+          cmake -S . -B build -G "Visual Studio 17 2022" -A x64
+          -DLUMATEXT_BUILD_SHARED=ON
+          -DLUMATEXT_BUILD_STATIC=ON
+          -DLUMATEXT_BUILD_SAMPLES=ON
+          -DLUMATEXT_BUILD_TESTS=ON
+      - name: Build
+        run: cmake --build build --config ${{ matrix.configuration }} --parallel
+      - name: Test
+        run: ctest --test-dir build -C ${{ matrix.configuration }} --output-on-failure
+      - name: Install
+        run: cmake --install build --config ${{ matrix.configuration }} --prefix out/install
+      - name: Verify package
+        run: >-
+          cmake -S tests/package -B out/package-smoke
+          -G "Visual Studio 17 2022" -A x64
+          -DCMAKE_PREFIX_PATH=${{ github.workspace }}/out/install
+      - name: Build package consumer
+        run: cmake --build out/package-smoke --config ${{ matrix.configuration }} --parallel
+
+  coretext-reference:
+    runs-on: macos-15
+    env:
+      NOTO_REGULAR_URL: https://raw.githubusercontent.com/notofonts/noto-cjk/Sans2.004/Sans/OTF/SimplifiedChinese/NotoSansCJKsc-Regular.otf
+      NOTO_BOLD_URL: https://raw.githubusercontent.com/notofonts/noto-cjk/Sans2.004/Sans/OTF/SimplifiedChinese/NotoSansCJKsc-Bold.otf
+      NOTO_REGULAR_SHA256: 41595827b2bc0d83d089e65f5a6f9e6a2f518119b385132b39b4b5fd115552e8
+      NOTO_BOLD_SHA256: de7aa5dbf3136a7d07c2e30b1fe7dce154e7ae9a73a63c55c2ac3db5e0b445d2
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download pinned Noto Sans CJK 2.004
+        run: |
+          mkdir -p out/fonts
+          curl -L --fail --retry 3 "$NOTO_REGULAR_URL" -o out/fonts/NotoSansCJKsc-Regular.otf
+          curl -L --fail --retry 3 "$NOTO_BOLD_URL" -o out/fonts/NotoSansCJKsc-Bold.otf
+          echo "$NOTO_REGULAR_SHA256  out/fonts/NotoSansCJKsc-Regular.otf" | shasum -a 256 -c -
+          echo "$NOTO_BOLD_SHA256  out/fonts/NotoSansCJKsc-Bold.otf" | shasum -a 256 -c -
+      - name: Build CoreText reference generator
+        run: swiftc tools/coretext_reference.swift -O -o out/coretext_reference
+      - name: Generate CoreText references
+        run: >-
+          out/coretext_reference
+          --regular out/fonts/NotoSansCJKsc-Regular.otf
+          --bold out/fonts/NotoSansCJKsc-Bold.otf
+          --output out/coretext
+      - uses: actions/upload-artifact@v4
+        with:
+          name: coretext-reference
+          path: out/coretext
+          if-no-files-found: error
+
+  coretext-compare:
+    runs-on: windows-latest
+    needs: coretext-reference
+    env:
+      NOTO_REGULAR_URL: https://raw.githubusercontent.com/notofonts/noto-cjk/Sans2.004/Sans/OTF/SimplifiedChinese/NotoSansCJKsc-Regular.otf
+      NOTO_BOLD_URL: https://raw.githubusercontent.com/notofonts/noto-cjk/Sans2.004/Sans/OTF/SimplifiedChinese/NotoSansCJKsc-Bold.otf
+      NOTO_REGULAR_SHA256: 41595827b2bc0d83d089e65f5a6f9e6a2f518119b385132b39b4b5fd115552e8
+      NOTO_BOLD_SHA256: de7aa5dbf3136a7d07c2e30b1fe7dce154e7ae9a73a63c55c2ac3db5e0b445d2
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: coretext-reference
+          path: out/coretext
+      - name: Download pinned Noto Sans CJK 2.004
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force out/fonts | Out-Null
+          Invoke-WebRequest $env:NOTO_REGULAR_URL -OutFile out/fonts/NotoSansCJKsc-Regular.otf
+          Invoke-WebRequest $env:NOTO_BOLD_URL -OutFile out/fonts/NotoSansCJKsc-Bold.otf
+          if ((Get-FileHash out/fonts/NotoSansCJKsc-Regular.otf -Algorithm SHA256).Hash.ToLower() -ne $env:NOTO_REGULAR_SHA256) { throw 'regular font hash mismatch' }
+          if ((Get-FileHash out/fonts/NotoSansCJKsc-Bold.otf -Algorithm SHA256).Hash.ToLower() -ne $env:NOTO_BOLD_SHA256) { throw 'bold font hash mismatch' }
+      - name: Configure LumaText reference renderer
+        run: >-
+          cmake -S . -B build -G "Visual Studio 17 2022" -A x64
+          -DLUMATEXT_BUILD_SHARED=ON
+          -DLUMATEXT_BUILD_STATIC=OFF
+          -DLUMATEXT_BUILD_SAMPLES=OFF
+          -DLUMATEXT_BUILD_TESTS=ON
+          -DLUMATEXT_BUILD_REFERENCE_TOOLS=ON
+      - name: Build LumaText reference renderer
+        run: cmake --build build --config Release --parallel
+      - name: Generate LumaText references
+        run: >-
+          build/Release/lumatext_reference_win.exe
+          --regular out/fonts/NotoSansCJKsc-Regular.otf
+          --bold out/fonts/NotoSansCJKsc-Bold.otf
+          --output out/lumatext
+      - name: Install comparator dependencies
+        run: python -m pip install --disable-pip-version-check numpy pillow scikit-image
+      - name: Compare against CoreText
+        run: >-
+          python tools/compare_reference.py
+          --coretext out/coretext
+          --lumatext out/lumatext
+          --output out/comparison
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: coretext-comparison
+          path: |
+            out/lumatext
+            out/comparison
