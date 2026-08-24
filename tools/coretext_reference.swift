@@ -160,8 +160,8 @@ for item in corpus {
                 CTRunGetAdvances(run, CFRange(location: 0, length: 0), &advances)
                 CTRunGetStringIndices(run, CFRange(location: 0, length: 0), &indices)
                 let attributes = CTRunGetAttributes(run) as NSDictionary
-                let runFont = attributes[kCTFontAttributeName] as? CTFont
-                let fontName = runFont.map { CTFontCopyPostScriptName($0) as String } ?? "unknown"
+                let runFont = attributes[kCTFontAttributeName] as! CTFont
+                let fontName = CTFontCopyPostScriptName(runFont) as String
                 for index in 0..<count {
                     glyphRecords.append(.init(glyph: glyphs[index], cluster: indices[index],
                         x: Double(positions[index].x), y: Double(positions[index].y),
