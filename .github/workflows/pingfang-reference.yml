@@ -15,7 +15,7 @@ jobs:
           sw_vers
           system_profiler SPSoftwareDataType
       - name: Build CoreText reference generator
-        run: swiftc tools/coretext_reference.swift -O -o out/coretext_reference
+        run: mkdir -p out && swiftc tools/coretext_reference.swift -O -o out/coretext_reference
       - name: Generate system PingFang references
         run: >-
           out/coretext_reference
