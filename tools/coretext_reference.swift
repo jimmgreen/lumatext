@@ -60,12 +60,25 @@ func argument(_ name: String) -> String {
     return CommandLine.arguments[index + 1]
 }
 
+func optionalArgument(_ name: String) -> String? {
+    guard let index = CommandLine.arguments.firstIndex(of: name),
+          index + 1 < CommandLine.arguments.count else { return nil }
+    return CommandLine.arguments[index + 1]
+}
+
 func sha256(_ url: URL) throws -> String {
     let data = try Data(contentsOf: url)
     return SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
 }
 
-func loadFont(_ url: URL, size: CGFloat) throws -> CTFont {
+func loadFont(_ url: URL?, systemFamily: String?, size: CGFloat) throws -> CTFont {
+    if let systemFamily {
+        return CTFontCreateWithName(systemFamily as CFString, size, nil)
+    }
+    guard let url else {
+        throw NSError(domain: "LumaTextCoreText", code: 1,
+                      userInfo: [NSLocalizedDescriptionKey: "missing font source"])
+    }
     let data = try Data(contentsOf: url) as CFData
     guard let provider = CGDataProvider(data: data), let cgFont = CGFont(provider) else {
         throw NSError(domain: "LumaTextCoreText", code: 1,
@@ -85,8 +98,11 @@ func writePNG(_ image: CGImage, to url: URL) throws {
     }
 }
 
-let regularURL = URL(fileURLWithPath: argument("--regular"))
-let boldURL = URL(fileURLWithPath: argument("--bold"))
+let systemFamily = optionalArgument("--system-family")
+let regularURL = systemFamily == nil
+    ? URL(fileURLWithPath: argument("--regular")) : nil
+let boldURL = systemFamily == nil
+    ? URL(fileURLWithPath: argument("--bold")) : nil
 let outputURL = URL(fileURLWithPath: argument("--output"), isDirectory: true)
 try FileManager.default.createDirectory(at: outputURL,
                                         withIntermediateDirectories: true)
@@ -119,7 +135,7 @@ var records: [RenderRecord] = []
 
 for item in corpus {
     let fontURL = item.weight >= 600 ? boldURL : regularURL
-    let font = try loadFont(fontURL, size: item.size)
+    let font = try loadFont(fontURL, systemFamily: systemFamily, size: item.size)
     for scale in scales {
         for backgroundName in ["light", "dark"] {
             let foreground = backgroundName == "light" ? lightForeground : darkForeground
@@ -207,9 +223,15 @@ for item in corpus {
     }
 }
 
+let identityFont = try loadFont(regularURL, systemFamily: systemFamily, size: 12)
+let identityName = CTFontCopyPostScriptName(identityFont) as String
+let identityVersion = (CTFontCopyAttribute(identityFont, kCTFontVersionNameKey) as? String) ?? "unknown"
+let regularIdentity = regularURL != nil ? try sha256(regularURL!) :
+    "system:\(identityName):\(identityVersion)"
+let boldIdentity = boldURL != nil ? try sha256(boldURL!) : regularIdentity
 let manifest = Manifest(renderer: "CoreText/CoreGraphics",
     osBuild: ProcessInfo.processInfo.operatingSystemVersionString,
-    regularSHA256: try sha256(regularURL), boldSHA256: try sha256(boldURL),
+    regularSHA256: regularIdentity, boldSHA256: boldIdentity,
     foregroundLight: [0.09, 0.098, 0.11, 1],
     foregroundDark: [0.91, 0.918, 0.929, 1],
     backgroundLight: [0.965, 0.969, 0.973, 1],
