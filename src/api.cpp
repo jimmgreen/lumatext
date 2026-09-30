@@ -20,9 +20,10 @@ lt_render_config default_render_config() noexcept {
   lt_render_config result{};
   result.struct_size = sizeof(result);
   result.abi_version = LT_ABI_VERSION;
-  result.coverage_gamma = 0.43f;
-  result.coverage_contrast = 1.92f;
+  result.coverage_gamma = lt::kDefaultCoverageGamma;
+  result.coverage_contrast = lt::kDefaultCoverageContrast;
   result.stem_strength = 0.00f;
+  result.raster_filter = LT_RASTER_FILTER_MITCHELL;
   return result;
 }
 
@@ -62,7 +63,13 @@ lt_renderer::~lt_renderer() {
 
 lt_frame::~lt_frame() {
   if (renderer) {
-    if (!ended && owns_draw && owner_thread(renderer)) renderer->d2d_target->EndDraw();
+    if (!ended && owns_draw && owner_thread(renderer) &&
+        renderer->d2d_target->EndDraw() == D2DERR_RECREATE_TARGET) {
+      renderer->clear_line_cache();
+      renderer->a8_bitmap_cache.clear();
+      renderer->a8_bitmap_owners.clear();
+      renderer->a8_cache_dpi_x = renderer->a8_cache_dpi_y = 0.0f;
+    }
     renderer->frame_active = false;
     renderer->release();
   }
@@ -141,11 +148,29 @@ lt_result __cdecl lt_d2d_renderer_create(lt_context* context, const lt_d2d_desc*
   renderer->context = context;
   context->retain();
   renderer->d2d_target = desc->render_target;
+  renderer->a8_bitmap_cache.clear();
+  renderer->a8_bitmap_owners.clear();
+  renderer->a8_cache_dpi_x = renderer->a8_cache_dpi_y = 0.0f;
   renderer->owner_thread = GetCurrentThreadId();
   if (desc->struct_size >= offsetof(lt_d2d_desc, manage_begin_end_draw) + sizeof(bool)) {
     renderer->manage_begin_end_draw = desc->manage_begin_end_draw;
   }
   *out_renderer = renderer.release();
+  return LT_OK;
+}
+
+lt_result __cdecl lt_d2d_renderer_set_target(lt_renderer* renderer,
+                                            ID2D1RenderTarget* target) {
+  if (!renderer || renderer->magic != lt::kObjectMagic || !target) {
+    return LT_E_INVALID_ARGUMENT;
+  }
+  if (!owner_thread(renderer)) return LT_E_WRONG_THREAD;
+  if (renderer->frame_active) return LT_E_INVALID_STATE;
+  renderer->d2d_target = target;
+  renderer->clear_line_cache();
+  renderer->a8_bitmap_cache.clear();
+  renderer->a8_bitmap_owners.clear();
+  renderer->a8_cache_dpi_x = renderer->a8_cache_dpi_y = 0.0f;
   return LT_OK;
 }
 
@@ -169,6 +194,14 @@ lt_result __cdecl lt_frame_begin(lt_renderer* renderer, const lt_frame_desc* des
   renderer->retain();
   frame->dpi_x = std::max(1.0f, lt::finite_or(desc->dpi_x, 96.0f));
   frame->dpi_y = std::max(1.0f, lt::finite_or(desc->dpi_y, 96.0f));
+  if (renderer->a8_cache_dpi_x != frame->dpi_x ||
+      renderer->a8_cache_dpi_y != frame->dpi_y) {
+    renderer->clear_line_cache();
+    renderer->a8_bitmap_cache.clear();
+    renderer->a8_bitmap_owners.clear();
+    renderer->a8_cache_dpi_x = frame->dpi_x;
+    renderer->a8_cache_dpi_y = frame->dpi_y;
+  }
   frame->stats.struct_size = sizeof(frame->stats);
   frame->stats.abi_version = LT_ABI_VERSION;
   renderer->frame_active = true;
@@ -234,7 +267,13 @@ lt_result __cdecl lt_frame_flush(lt_frame* frame) {
   if (!owner_thread(frame->renderer)) return LT_E_WRONG_THREAD;
   if (frame->ended) return LT_E_INVALID_STATE;
   HRESULT hr = frame->renderer->d2d_target->Flush();
-  if (hr == D2DERR_RECREATE_TARGET) return LT_E_DEVICE_LOST;
+  if (hr == D2DERR_RECREATE_TARGET) {
+    frame->renderer->clear_line_cache();
+    frame->renderer->a8_bitmap_cache.clear();
+    frame->renderer->a8_bitmap_owners.clear();
+    frame->renderer->a8_cache_dpi_x = frame->renderer->a8_cache_dpi_y = 0.0f;
+    return LT_E_DEVICE_LOST;
+  }
   return SUCCEEDED(hr) ? LT_OK : LT_E_INTERNAL;
 }
 
@@ -246,7 +285,13 @@ lt_result __cdecl lt_frame_end(lt_frame* frame) {
   frame->renderer->frame_active = false;
   if (!frame->owns_draw) return LT_OK;
   HRESULT hr = frame->renderer->d2d_target->EndDraw();
-  if (hr == D2DERR_RECREATE_TARGET) return LT_E_DEVICE_LOST;
+  if (hr == D2DERR_RECREATE_TARGET) {
+    frame->renderer->clear_line_cache();
+    frame->renderer->a8_bitmap_cache.clear();
+    frame->renderer->a8_bitmap_owners.clear();
+    frame->renderer->a8_cache_dpi_x = frame->renderer->a8_cache_dpi_y = 0.0f;
+    return LT_E_DEVICE_LOST;
+  }
   return SUCCEEDED(hr) ? LT_OK : LT_E_INTERNAL;
 }
 

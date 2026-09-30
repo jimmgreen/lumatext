@@ -26,10 +26,10 @@ struct HbFaceCache {
   hb_face_t* get(lt_font_face* source) {
     auto found = faces.find(source);
     if (found != faces.end()) return found->second;
-    const auto& bytes = source->blob->bytes;
+    if (!source->blob || source->blob->empty()) return nullptr;
     hb_blob_t* blob = hb_blob_create(
-        reinterpret_cast<const char*>(bytes.data()),
-        static_cast<unsigned>(bytes.size()), HB_MEMORY_MODE_READONLY, nullptr, nullptr);
+        reinterpret_cast<const char*>(source->blob->data()),
+        static_cast<unsigned>(source->blob->size()), HB_MEMORY_MODE_READONLY, nullptr, nullptr);
     if (!blob) return nullptr;
     hb_face_t* face = hb_face_create(blob, source->blob->face_index);
     hb_blob_destroy(blob);
@@ -369,27 +369,30 @@ void retain_run_faces(lt_text_layout& layout) {
   }
 }
 
-void build_cluster_boxes(lt_text_layout& layout,
-                         const std::vector<uint32_t>& grapheme_boundaries) {
+void build_cluster_boxes(lt_text_layout& layout) {
   struct Accumulator {
     float left = std::numeric_limits<float>::max();
     float right = std::numeric_limits<float>::lowest();
     bool rtl = false;
+    uint32_t end = 0;
   };
   std::map<uint32_t, Accumulator> values;
   for (const auto& run : layout.runs) {
+    std::vector<uint32_t> boundaries;
+    boundaries.reserve(run.glyphs.size() + 1);
+    for (const auto& glyph : run.glyphs) boundaries.push_back(glyph.cluster);
+    boundaries.push_back(run.text_start + run.text_length);
+    std::sort(boundaries.begin(), boundaries.end());
     for (const auto& glyph : run.glyphs) {
       auto& value = values[glyph.cluster];
       value.left = std::min(value.left, glyph.x);
       value.right = std::max(value.right, glyph.x + std::max(0.0f, glyph.advance));
       value.rtl = run.right_to_left;
+      value.end = *std::upper_bound(boundaries.begin(), boundaries.end(), glyph.cluster);
     }
   }
   for (const auto& [position, value] : values) {
-    auto next = std::upper_bound(grapheme_boundaries.begin(), grapheme_boundaries.end(), position);
-    const uint32_t end = next != grapheme_boundaries.end()
-        ? *next : static_cast<uint32_t>(layout.text.size());
-    layout.clusters.push_back({position, std::max(1u, end - position),
+    layout.clusters.push_back({position, std::max(1u, value.end - position),
         value.left, std::max(0.0f, value.right - value.left), value.rtl});
   }
   std::sort(layout.clusters.begin(), layout.clusters.end(),
@@ -569,7 +572,7 @@ lt_result __cdecl lt_text_layout_create(lt_context* context,
     layout->metrics.leading = 0.0f;
     layout->metrics.height = ascent + descent;
     layout->metrics.run_count = static_cast<uint32_t>(layout->runs.size());
-    build_cluster_boxes(*layout, boundaries);
+    build_cluster_boxes(*layout);
     apply_alignment(*layout, desc->alignment, desc->max_width);
     retain_run_faces(*layout);
     layout->shaping_time_us = static_cast<uint64_t>(
@@ -640,10 +643,13 @@ lt_result __cdecl lt_text_layout_hit_test_position(const lt_text_layout* layout,
     return LT_E_INVALID_ARGUMENT;
   }
   if (layout->clusters.empty()) return LT_E_INVALID_STATE;
+  const bool at_end = text_position == layout->text.size();
+  const uint32_t lookup_position = at_end ? text_position - 1 : text_position;
+  if (at_end) trailing = true;
   const lt::ClusterBox* selected = &layout->clusters.back();
   for (const auto& cluster : layout->clusters) {
-    if (text_position >= cluster.text_position &&
-        text_position < cluster.text_position + cluster.text_length) {
+    if (lookup_position >= cluster.text_position &&
+        lookup_position < cluster.text_position + cluster.text_length) {
       selected = &cluster;
       break;
     }

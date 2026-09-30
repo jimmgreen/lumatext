@@ -8,6 +8,7 @@
 #include <fstream>
 #include <string>
 #include <vector>
+#include <cmath>
 
 using Microsoft::WRL::ComPtr;
 
@@ -150,6 +151,34 @@ int run() {
   hit = LumaText::Descriptor<lt_hit_test_metrics>();
   CHECK(lt_text_layout_hit_test_point(bidi_layout.get(), metrics.width * 0.5f,
       metrics.height * 0.5f, &hit) == LT_OK);
+
+  // Logical end positions must work in both visual directions.
+  for (bool rtl : {false, true}) {
+    layout_desc.text = rtl ? L"\x05d0\x05d1" : L"ab";
+    layout_desc.text_length = 2;
+    layout_desc.direction = rtl ? LT_TEXT_DIRECTION_RTL : LT_TEXT_DIRECTION_LTR;
+    LumaText::TextLayout edge_layout;
+    CHECK(lt_text_layout_create(context.get(), &layout_desc, edge_layout.put()) == LT_OK);
+    CHECK(lt_text_layout_get_metrics(edge_layout.get(), &metrics) == LT_OK);
+    CHECK(lt_text_layout_hit_test_position(edge_layout.get(), 2, false,
+        &hit_x, &hit_y, &hit) == LT_OK);
+    CHECK(std::abs(hit_x - (rtl ? 0.0f : metrics.width)) < 0.01f);
+  }
+  const lt_open_type_feature liga{0x6c696761u, 1};
+  layout_desc.text = L"fix";
+  layout_desc.text_length = 3;
+  layout_desc.direction = LT_TEXT_DIRECTION_LTR;
+  layout_desc.base_style.features = &liga;
+  layout_desc.base_style.feature_count = 1;
+  LumaText::TextLayout ligature_layout;
+  CHECK(lt_text_layout_create(context.get(), &layout_desc, ligature_layout.put()) == LT_OK);
+  CHECK(lt_text_layout_hit_test_position(ligature_layout.get(), 0, false,
+      &hit_x, &hit_y, &hit) == LT_OK);
+  CHECK(hit.text_position == 0 && hit.text_length == 2);
+  const float ligature_x = hit_x;
+  CHECK(lt_text_layout_hit_test_position(ligature_layout.get(), 1, false,
+      &hit_x, &hit_y, &hit) == LT_OK);
+  CHECK(hit.text_position == 0 && hit.text_length == 2 && hit_x == ligature_x);
 
   if (GetFileAttributesW(L"C:\\Windows\\Fonts\\msyh.ttc") != INVALID_FILE_ATTRIBUTES) {
     LumaText::FontFace ttc;

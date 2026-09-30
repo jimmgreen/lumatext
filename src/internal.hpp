@@ -5,6 +5,7 @@
 #include <d2d1.h>
 #include <dwrite.h>
 #include <dwrite_1.h>
+#include <windows.h>
 #include <wrl/client.h>
 
 #include <ft2build.h>
@@ -41,6 +42,8 @@ namespace lt {
 using Microsoft::WRL::ComPtr;
 
 constexpr uint64_t kObjectMagic = 0x4c554d4154455854ull;
+constexpr float kDefaultCoverageGamma = 0.85f;
+constexpr float kDefaultCoverageContrast = 1.00f;
 
 struct Object {
   uint64_t magic = kObjectMagic;
@@ -61,6 +64,36 @@ inline float finite_or(float value, float fallback) noexcept {
   return std::isfinite(value) ? value : fallback;
 }
 
+struct MappedFile {
+  HANDLE file = INVALID_HANDLE_VALUE;
+  HANDLE mapping = nullptr;
+  const uint8_t* view = nullptr;
+  size_t size = 0;
+
+  MappedFile() = default;
+  MappedFile(const MappedFile&) = delete;
+  MappedFile& operator=(const MappedFile&) = delete;
+  ~MappedFile() {
+    if (view) UnmapViewOfFile(view);
+    if (mapping) CloseHandle(mapping);
+    if (file != INVALID_HANDLE_VALUE) CloseHandle(file);
+  }
+};
+
+struct DWriteFragment {
+  ComPtr<IDWriteFontFileStream> stream;
+  void* fragment_context = nullptr;
+  const uint8_t* data = nullptr;
+  size_t size = 0;
+
+  DWriteFragment() = default;
+  DWriteFragment(const DWriteFragment&) = delete;
+  DWriteFragment& operator=(const DWriteFragment&) = delete;
+  ~DWriteFragment() {
+    if (stream) stream->ReleaseFileFragment(fragment_context);
+  }
+};
+
 struct FontBlob {
   struct AxisValue {
     uint32_t tag = 0;
@@ -70,8 +103,22 @@ struct FontBlob {
   uint32_t face_index = 0;
   uint16_t weight = 400;
   bool has_color = false;
-  std::vector<uint8_t> bytes;
+  std::shared_ptr<MappedFile> mapping;
+  std::shared_ptr<DWriteFragment> dwrite;
+  std::vector<uint8_t> owned;
   std::vector<AxisValue> axes;
+
+  const uint8_t* data() const noexcept {
+    if (mapping && mapping->view) return mapping->view;
+    if (dwrite && dwrite->data) return dwrite->data;
+    return owned.empty() ? nullptr : owned.data();
+  }
+  size_t size() const noexcept {
+    if (mapping) return mapping->size;
+    if (dwrite) return dwrite->size;
+    return owned.size();
+  }
+  bool empty() const noexcept { return data() == nullptr || size() == 0; }
 };
 
 uint64_t next_font_identity() noexcept;
@@ -83,11 +130,14 @@ struct GlyphKey {
   uint16_t dpi_x = 96;
   uint16_t dpi_y = 96;
   uint8_t x_phase = 0;
+  uint8_t y_phase = 0;
+  uint8_t raster_filter = LT_RASTER_FILTER_MITCHELL;
   uint8_t gamma_64 = 64;
   uint8_t contrast_64 = 64;
   uint8_t stem_64 = 0;
   uint8_t synthetic_64 = 0;
   uint8_t hinted = 0;
+  uint8_t optical_64 = 0;
 
   bool operator==(const GlyphKey&) const noexcept = default;
 };
@@ -101,6 +151,7 @@ struct GlyphBitmap {
   int32_t top = 0;
   uint32_t width = 0;
   uint32_t height = 0;
+  float advance = 0.0f;
   std::vector<uint8_t> pixels;
 };
 
@@ -183,7 +234,13 @@ struct lt_context final : lt::Object {
   std::list<lt::GlyphKey> glyph_lru;
   uint64_t glyph_cache_bytes = 0;
 
+  std::mutex memory_font_mutex;
+  std::unordered_map<uint64_t, std::shared_ptr<const lt::FontBlob>> memory_fonts;
+  std::mutex mapped_font_mutex;
+  std::unordered_map<std::wstring, std::shared_ptr<lt::MappedFile>> mapped_fonts;
+
   void log(int32_t level, const char* message) const noexcept;
+  lt_result get_mapped_file(const wchar_t* path, std::shared_ptr<lt::MappedFile>& out);
   lt_result get_glyph(IDWriteFontFace* face, const lt::GlyphKey& key,
                       std::shared_ptr<const lt::GlyphBitmap>& out, bool* cache_hit = nullptr);
   lt_result get_glyph(std::shared_ptr<const lt::FontBlob> font, const lt::GlyphKey& key,
@@ -219,7 +276,14 @@ struct lt_render_profile final : lt::Object {
   uint32_t flags = 0;
 };
 
+struct lt_glyph_image final : lt::Object {
+  std::shared_ptr<const lt::GlyphBitmap> bitmap;
+  float advance = 0.0f;
+};
+
 struct lt_text_layout final : lt::Object {
+  // Share the process-wide identity allocator; cached images never retain a layout.
+  uint64_t cache_identity = lt::next_font_identity();
   lt_context* context = nullptr;
   std::u16string text;
   std::vector<lt::ShapedRun> runs;
@@ -234,6 +298,38 @@ struct lt_text_layout final : lt::Object {
 
 enum class lt_renderer_kind { d2d };
 
+struct lt_line_bitmap_key {
+  uint64_t layout_identity = 0;
+  float origin_x = 0, origin_y = 0, dpi_x = 0, dpi_y = 0;
+  lt_color foreground{}, background{};
+  lt_background_type background_type{};
+  lt_render_config config{};
+  float regular_optical_weight = 0, bold_optical_weight = 0;
+
+  bool operator==(const lt_line_bitmap_key& other) const noexcept {
+    const auto color_equal = [](const lt_color& a, const lt_color& b) {
+      return a.r == b.r && a.g == b.g && a.b == b.b && a.a == b.a;
+    };
+    return layout_identity == other.layout_identity && origin_x == other.origin_x &&
+        origin_y == other.origin_y && dpi_x == other.dpi_x && dpi_y == other.dpi_y &&
+        color_equal(foreground, other.foreground) && color_equal(background, other.background) &&
+        background_type == other.background_type &&
+        config.coverage_gamma == other.config.coverage_gamma &&
+        config.coverage_contrast == other.config.coverage_contrast &&
+        config.stem_strength == other.config.stem_strength &&
+        config.flags == other.config.flags && config.raster_filter == other.config.raster_filter &&
+        regular_optical_weight == other.regular_optical_weight &&
+        bold_optical_weight == other.bold_optical_weight;
+  }
+};
+
+struct lt_line_bitmap_entry {
+  lt_line_bitmap_key key;
+  lt::ComPtr<ID2D1Bitmap> bitmap;
+  D2D1_RECT_F destination{};
+  uint64_t bytes = 0;
+};
+
 struct lt_renderer final : lt::Object {
   lt_context* context = nullptr;
   lt_renderer_kind kind = lt_renderer_kind::d2d;
@@ -241,6 +337,20 @@ struct lt_renderer final : lt::Object {
   DWORD owner_thread = 0;
   bool manage_begin_end_draw = false;
   bool frame_active = false;
+  std::unordered_map<const lt::GlyphBitmap*, lt::ComPtr<ID2D1Bitmap>> a8_bitmap_cache;
+  std::unordered_map<const lt::GlyphBitmap*, std::shared_ptr<const lt::GlyphBitmap>>
+      a8_bitmap_owners;
+  float a8_cache_dpi_x = 0.0f;
+  float a8_cache_dpi_y = 0.0f;
+  static constexpr uint64_t line_cache_limit = 8ull * 1024 * 1024;
+  static constexpr size_t line_cache_entries = 64;
+  std::list<lt_line_bitmap_entry> line_bitmap_cache;
+  uint64_t line_bitmap_bytes = 0;
+
+  void clear_line_cache() noexcept {
+    line_bitmap_cache.clear();
+    line_bitmap_bytes = 0;
+  }
 
   ~lt_renderer() override;
 };

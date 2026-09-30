@@ -29,8 +29,8 @@ int main() {
   FT_Library library = nullptr;
   FT_Face ft_face = nullptr;
   CHECK(FT_Init_FreeType(&library) == 0);
-  CHECK(FT_New_Memory_Face(library, face.get()->blob->bytes.data(),
-      static_cast<FT_Long>(face.get()->blob->bytes.size()), 0, &ft_face) == 0);
+  CHECK(FT_New_Memory_Face(library, face.get()->blob->data(),
+      static_cast<FT_Long>(face.get()->blob->size()), 0, &ft_face) == 0);
   const FT_UInt glyph_index = FT_Get_Char_Index(ft_face, 'y');
   CHECK(glyph_index != 0);
   FT_Done_Face(ft_face);
@@ -57,6 +57,66 @@ int main() {
     }
   }
   CHECK(glyph_ink_below_baseline);
+
+  // Direct and supersampled outlines must use the same physical emboldening.
+  auto ink_width = [](const lt::GlyphBitmap& bitmap) {
+    double coverage = 0;
+    for (uint8_t pixel : bitmap.pixels) coverage += pixel / 255.0;
+    return coverage;
+  };
+  double added_ink[2]{};
+  for (int mode = 0; mode < 2; ++mode) {
+    key.raster_filter = mode == 0 ? LT_RASTER_FILTER_DIRECT : LT_RASTER_FILTER_BOX;
+    key.stem_64 = 0;
+    CHECK(lt::Rasterizer::render(face.get()->blob, key, glyph) == LT_OK);
+    const double normal = ink_width(*glyph);
+    key.stem_64 = 32;
+    CHECK(lt::Rasterizer::render(face.get()->blob, key, glyph) == LT_OK);
+    added_ink[mode] = ink_width(*glyph) - normal;
+  }
+  CHECK(added_ink[0] > 0 && added_ink[1] > 0);
+  CHECK(added_ink[0] / added_ink[1] > 0.75 && added_ink[0] / added_ink[1] < 1.25);
+
+  // Baseline Y increases downwards in the public renderer coordinates.
+  key.stem_64 = 0;
+  key.em_size_26_6 = 32 * 64;
+  key.dpi_x = key.dpi_y = 96;
+  auto centroid_y = [](const lt::GlyphBitmap& bitmap) {
+    double total = 0, moment = 0;
+    for (uint32_t row = 0; row < bitmap.height; ++row) {
+      for (uint32_t column = 0; column < bitmap.width; ++column) {
+        const double alpha = bitmap.pixels[static_cast<size_t>(row) * bitmap.width + column];
+        total += alpha;
+        moment += alpha * (static_cast<double>(row) + 0.5 - bitmap.top);
+      }
+    }
+    return moment / total;
+  };
+  for (uint8_t filter : {LT_RASTER_FILTER_DIRECT, LT_RASTER_FILTER_BOX, LT_RASTER_FILTER_MITCHELL}) {
+    key.raster_filter = filter;
+    double start_y = 0;
+    for (uint8_t phase = 0; phase < 8; ++phase) {
+      key.y_phase = phase;
+      CHECK(lt::Rasterizer::render(face.get()->blob, key, glyph) == LT_OK);
+      const double position = centroid_y(*glyph);
+      if (phase == 0) start_y = position;
+      CHECK(std::abs(position - start_y - phase / 8.0) < 0.10);
+    }
+  }
+
+  // Profile compensation is explicit and must also work for real bold outlines.
+  source.file_path = L"C:\\Windows\\Fonts\\msyhbd.ttc";
+  LumaText::FontFace bold_face;
+  CHECK(lt_font_face_create(context.get(), &source, bold_face.put()) == LT_OK);
+  key.y_phase = 0;
+  key.optical_64 = 0;
+  CHECK(lt::Rasterizer::render(bold_face.get()->blob, key, glyph) == LT_OK);
+  const double plain_bold_ink = ink_width(*glyph);
+  const float plain_bold_advance = glyph->advance;
+  key.optical_64 = 16;
+  CHECK(lt::Rasterizer::render(bold_face.get()->blob, key, glyph) == LT_OK);
+  CHECK(ink_width(*glyph) > plain_bold_ink);
+  CHECK(glyph->advance == plain_bold_advance);
 
   lt::ComPtr<IWICImagingFactory> wic;
   lt::ComPtr<IWICBitmap> surface;

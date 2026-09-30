@@ -11,36 +11,25 @@ constexpr size_t cascade_required =
 constexpr size_t profile_required =
     offsetof(lt_render_profile_desc, dark) + sizeof(lt_render_config);
 
-lt_result read_file(const wchar_t* path, std::vector<uint8_t>& bytes) {
+lt_result map_font_file(const wchar_t* path, std::shared_ptr<lt::MappedFile>& out) {
   if (!path || !*path) return LT_E_INVALID_ARGUMENT;
-  HANDLE file = CreateFileW(path, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE |
-      FILE_SHARE_DELETE, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
-  if (file == INVALID_HANDLE_VALUE) return LT_E_FONT_UNAVAILABLE;
+  auto mapped = std::make_shared<lt::MappedFile>();
+  mapped->file = CreateFileW(path, GENERIC_READ,
+      FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
+      OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+  if (mapped->file == INVALID_HANDLE_VALUE) return LT_E_FONT_UNAVAILABLE;
   LARGE_INTEGER size{};
-  if (!GetFileSizeEx(file, &size) || size.QuadPart <= 0 ||
+  if (!GetFileSizeEx(mapped->file, &size) || size.QuadPart <= 0 ||
       static_cast<uint64_t>(size.QuadPart) > static_cast<uint64_t>(SIZE_MAX)) {
-    CloseHandle(file);
     return LT_E_FONT_UNAVAILABLE;
   }
-  try {
-    bytes.resize(static_cast<size_t>(size.QuadPart));
-  } catch (...) {
-    CloseHandle(file);
-    return LT_E_OUT_OF_MEMORY;
-  }
-  size_t offset = 0;
-  while (offset < bytes.size()) {
-    const DWORD request = static_cast<DWORD>(std::min<size_t>(
-        bytes.size() - offset, static_cast<size_t>(MAXDWORD)));
-    DWORD received = 0;
-    if (!ReadFile(file, bytes.data() + offset, request, &received, nullptr) ||
-        received == 0) {
-      CloseHandle(file);
-      return LT_E_FONT_UNAVAILABLE;
-    }
-    offset += received;
-  }
-  CloseHandle(file);
+  mapped->size = static_cast<size_t>(size.QuadPart);
+  mapped->mapping = CreateFileMappingW(mapped->file, nullptr, PAGE_READONLY, 0, 0, nullptr);
+  if (!mapped->mapping) return LT_E_FONT_UNAVAILABLE;
+  mapped->view = static_cast<const uint8_t*>(
+      MapViewOfFile(mapped->mapping, FILE_MAP_READ, 0, 0, 0));
+  if (!mapped->view) return LT_E_OUT_OF_MEMORY;
+  out = std::move(mapped);
   return LT_OK;
 }
 
@@ -52,10 +41,37 @@ lt_render_config normalized_config(const lt_render_config& input) noexcept {
   result.coverage_contrast = std::clamp(lt::finite_or(input.coverage_contrast, 1.0f), 0.25f, 3.0f);
   result.stem_strength = std::clamp(lt::finite_or(input.stem_strength, 0.0f), 0.0f, 1.0f);
   result.flags = input.flags;
+  const uint8_t requested_filter = input.struct_size >=
+      offsetof(lt_render_config, raster_filter) + sizeof(uint8_t)
+      ? input.raster_filter : LT_RASTER_FILTER_DEFAULT;
+  result.raster_filter = requested_filter == LT_RASTER_FILTER_DIRECT ||
+      requested_filter == LT_RASTER_FILTER_BOX ||
+      requested_filter == LT_RASTER_FILTER_MITCHELL
+      ? requested_filter : LT_RASTER_FILTER_MITCHELL;
   return result;
 }
 
 }  // namespace
+
+lt_result lt_context::get_mapped_file(const wchar_t* path,
+                                      std::shared_ptr<lt::MappedFile>& out) {
+  if (!path || !*path) return LT_E_INVALID_ARGUMENT;
+  const std::wstring key(path);
+  {
+    std::lock_guard lock(mapped_font_mutex);
+    if (const auto found = mapped_fonts.find(key); found != mapped_fonts.end()) {
+      out = found->second;
+      return LT_OK;
+    }
+  }
+  std::shared_ptr<lt::MappedFile> mapped;
+  const lt_result result = map_font_file(path, mapped);
+  if (result != LT_OK) return result;
+  std::lock_guard lock(mapped_font_mutex);
+  const auto [position, inserted] = mapped_fonts.emplace(key, mapped);
+  out = inserted ? std::move(mapped) : position->second;
+  return LT_OK;
+}
 
 lt_font_face::~lt_font_face() {
   if (context) context->release();
@@ -96,16 +112,17 @@ lt_result __cdecl lt_font_face_create(lt_context* context,
     blob->face_index = desc->face_index;
     lt_result result = LT_OK;
     if (desc->source_type == LT_FONT_SOURCE_FILE) {
-      result = read_file(desc->file_path, blob->bytes);
+      result = context->get_mapped_file(desc->file_path, blob->mapping);
     } else {
       if (!desc->memory_data || desc->memory_size == 0 ||
           desc->memory_size > static_cast<uint64_t>(SIZE_MAX)) {
         return LT_E_INVALID_ARGUMENT;
       }
       const auto* begin = static_cast<const uint8_t*>(desc->memory_data);
-      blob->bytes.assign(begin, begin + static_cast<size_t>(desc->memory_size));
+      blob->owned.assign(begin, begin + static_cast<size_t>(desc->memory_size));
     }
     if (result != LT_OK) return result;
+    if (blob->empty()) return LT_E_FONT_UNAVAILABLE;
 
     if (desc->struct_size >= offsetof(lt_font_source_desc, axis_count) + sizeof(uint32_t)) {
       if (desc->axis_count > 64 || (desc->axis_count != 0 && !desc->axes)) {
@@ -121,8 +138,8 @@ lt_result __cdecl lt_font_face_create(lt_context* context,
     FT_Library library = nullptr;
     FT_Face ft_face = nullptr;
     if (FT_Init_FreeType(&library) != 0 || !library ||
-        FT_New_Memory_Face(library, blob->bytes.data(),
-            static_cast<FT_Long>(blob->bytes.size()), blob->face_index, &ft_face) != 0 ||
+        FT_New_Memory_Face(library, blob->data(),
+            static_cast<FT_Long>(blob->size()), blob->face_index, &ft_face) != 0 ||
         !ft_face) {
       if (ft_face) FT_Done_Face(ft_face);
       if (library) FT_Done_FreeType(library);
@@ -213,11 +230,14 @@ lt_result __cdecl lt_render_profile_create(const lt_render_profile_desc* desc,
   if (!profile) return LT_E_OUT_OF_MEMORY;
   profile->light = normalized_config(desc->light);
   profile->dark = normalized_config(desc->dark);
-  profile->regular_optical_weight = std::clamp(
-      lt::finite_or(desc->regular_optical_weight, 0.0f), 0.0f, 1.0f);
-  profile->bold_optical_weight = std::clamp(
-      lt::finite_or(desc->bold_optical_weight, 0.0f), 0.0f, 1.0f);
-  profile->flags = desc->flags;
+  if (desc->struct_size >= offsetof(lt_render_profile_desc, regular_optical_weight) + sizeof(float))
+    profile->regular_optical_weight = std::clamp(
+        lt::finite_or(desc->regular_optical_weight, 0.0f), 0.0f, 1.0f);
+  if (desc->struct_size >= offsetof(lt_render_profile_desc, bold_optical_weight) + sizeof(float))
+    profile->bold_optical_weight = std::clamp(
+        lt::finite_or(desc->bold_optical_weight, 0.0f), 0.0f, 1.0f);
+  if (desc->struct_size >= offsetof(lt_render_profile_desc, flags) + sizeof(uint32_t))
+    profile->flags = desc->flags;
   *out_profile = profile.release();
   return LT_OK;
 }

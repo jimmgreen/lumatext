@@ -43,6 +43,7 @@ typedef struct lt_font_face lt_font_face;
 typedef struct lt_font_cascade lt_font_cascade;
 typedef struct lt_text_layout lt_text_layout;
 typedef struct lt_render_profile lt_render_profile;
+typedef struct lt_glyph_image lt_glyph_image;
 
 typedef struct IDWriteFactory IDWriteFactory;
 typedef struct IDWriteTextLayout IDWriteTextLayout;
@@ -71,12 +72,24 @@ typedef struct lt_render_config {
   float coverage_contrast;
   float stem_strength;
   uint32_t flags;
+  uint8_t raster_filter;
+  uint8_t reserved[3];
 } lt_render_config;
+
+enum {
+  LT_RASTER_FILTER_DEFAULT = 0,
+  LT_RASTER_FILTER_DIRECT = 1,
+  LT_RASTER_FILTER_BOX = 2,
+  LT_RASTER_FILTER_MITCHELL = 3
+};
 
 enum {
   LT_RENDER_CONFIG_LINEAR_BLEND = 1u << 0,
   LT_RENDER_CONFIG_DISABLE_STEM_COMPENSATION = 1u << 1,
-  LT_RENDER_CONFIG_HINTED_OUTLINES = 1u << 2
+  LT_RENDER_CONFIG_HINTED_OUTLINES = 1u << 2,
+  // Transparent text over a caller-declared uniform, opaque background color.
+  // Precomposes in linear light; invalid when background.a != 1.
+  LT_RENDER_CONFIG_KNOWN_BACKGROUND = 1u << 3
 };
 
 typedef enum lt_font_source_type {
@@ -207,11 +220,49 @@ typedef struct lt_render_profile_desc {
   LT_STRUCT_HEADER;
   lt_render_config light;
   lt_render_config dark;
+  // Additional horizontal outline weight in physical pixels [0, 1].
+  // Applied independently of the coverage curve; does not change glyph advances.
   float regular_optical_weight;
   float bold_optical_weight;
   uint32_t flags;
   uint32_t reserved;
 } lt_render_profile_desc;
+
+#ifdef __cplusplus
+struct IDWriteFontFace;
+#else
+typedef struct IDWriteFontFace IDWriteFontFace;
+#endif
+
+typedef struct lt_glyph_request {
+  LT_STRUCT_HEADER;
+  const void* font_bytes;
+  uint64_t font_size;
+  uint32_t face_index;
+  IDWriteFontFace* dwrite_face;
+  uint16_t glyph_id;
+  uint16_t synth_weight;
+  float px_em;
+  float dpi_x;
+  float dpi_y;
+  uint8_t x_phase;
+  // Eighth-pixel baseline phase, increasing downwards in render-target coordinates.
+  uint8_t y_phase;
+  uint8_t reserved[2];
+  lt_render_config cfg;
+  /* Optional preloaded face from the same context; takes precedence over other sources. */
+  lt_font_face* font_face;
+} lt_glyph_request;
+
+typedef struct lt_glyph_bitmap {
+  LT_STRUCT_HEADER;
+  const uint8_t* a8;
+  int32_t width;
+  int32_t height;
+  int32_t left;
+  int32_t top;
+  float advance;
+} lt_glyph_bitmap;
 
 typedef struct lt_d2d_desc {
   LT_STRUCT_HEADER;
@@ -280,6 +331,7 @@ typedef struct lt_frame_stats {
   uint64_t raster_time_us;
   uint64_t composition_time_us;
   uint64_t upload_time_us;
+  uint32_t line_cache_hits;
 } lt_frame_stats;
 
 typedef struct lt_input_desc {
@@ -308,11 +360,15 @@ LT_API lt_result __cdecl lt_context_create(const lt_context_desc* desc, lt_conte
 LT_API lt_result __cdecl lt_font_face_create(lt_context* context, const lt_font_source_desc* desc, lt_font_face** out_face);
 LT_API lt_result __cdecl lt_font_cascade_create(lt_context* context, const lt_font_cascade_desc* desc, lt_font_cascade** out_cascade);
 LT_API lt_result __cdecl lt_render_profile_create(const lt_render_profile_desc* desc, lt_render_profile** out_profile);
+LT_API lt_result __cdecl lt_glyph_provider_get(lt_context* context, const lt_glyph_request* request, lt_glyph_image** out_image);
+LT_API lt_result __cdecl lt_glyph_image_describe(const lt_glyph_image* image, lt_glyph_bitmap* out_bitmap);
 LT_API lt_result __cdecl lt_text_layout_create(lt_context* context, const lt_text_layout_desc* desc, lt_text_layout** out_layout);
 LT_API lt_result __cdecl lt_text_layout_get_metrics(const lt_text_layout* layout, lt_text_metrics* out_metrics);
 LT_API lt_result __cdecl lt_text_layout_hit_test_point(const lt_text_layout* layout, float x, float y, lt_hit_test_metrics* out_metrics);
 LT_API lt_result __cdecl lt_text_layout_hit_test_position(const lt_text_layout* layout, uint32_t text_position, bool trailing, float* out_x, float* out_y, lt_hit_test_metrics* out_metrics);
 LT_API lt_result __cdecl lt_d2d_renderer_create(lt_context* context, const lt_d2d_desc* desc, lt_renderer** out_renderer);
+// Call on the renderer's owner thread, outside a frame; invalidates device caches.
+LT_API lt_result __cdecl lt_d2d_renderer_set_target(lt_renderer* renderer, ID2D1RenderTarget* target);
 LT_API lt_result __cdecl lt_d3d11_renderer_create(lt_context* context, const lt_d3d11_desc* desc, lt_renderer** out_renderer);
 LT_API lt_result __cdecl lt_frame_begin(lt_renderer* renderer, const lt_frame_desc* desc, lt_frame** out_frame);
 LT_API lt_result __cdecl lt_frame_draw_layout(lt_frame* frame, IDWriteTextLayout* layout, const lt_draw_text_desc* desc);

@@ -44,20 +44,20 @@ lt_result lt::FontBridge::get_blob(IDWriteFontFace* face,
     return LT_E_FONT_UNAVAILABLE;
   }
 
+  // Allocate the owner before acquiring a fragment. Any later allocation
+  // failure releases the fragment, including loaders with a null context.
+  auto fragment = std::make_shared<DWriteFragment>();
   const void* fragment_start = nullptr;
-  void* fragment_context = nullptr;
-  hr = stream->ReadFileFragment(&fragment_start, 0, file_size, &fragment_context);
-  if (FAILED(hr) || !fragment_start) return LT_E_FONT_UNAVAILABLE;
+  hr = stream->ReadFileFragment(&fragment_start, 0, file_size,
+                                &fragment->fragment_context);
+  if (FAILED(hr)) return LT_E_FONT_UNAVAILABLE;
+  fragment->stream = stream;
+  if (!fragment_start) return LT_E_FONT_UNAVAILABLE;
+  fragment->data = static_cast<const uint8_t*>(fragment_start);
+  fragment->size = static_cast<size_t>(file_size);
 
   auto blob = std::make_shared<FontBlob>();
-  try {
-    const auto* bytes = static_cast<const uint8_t*>(fragment_start);
-    blob->bytes.assign(bytes, bytes + static_cast<size_t>(file_size));
-  } catch (...) {
-    stream->ReleaseFileFragment(fragment_context);
-    return LT_E_OUT_OF_MEMORY;
-  }
-  stream->ReleaseFileFragment(fragment_context);
+  blob->dwrite = std::move(fragment);
   blob->identity = next_font_identity();
   blob->face_index = face->GetIndex();
   ComPtr<IDWriteFontFace5> variable_face;

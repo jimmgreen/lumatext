@@ -25,10 +25,14 @@ size_t lt::GlyphKeyHash::operator()(const GlyphKey& key) const noexcept {
   result = mix(result, key.glyph_index);
   result = mix(result, key.em_size_26_6);
   result = mix(result, static_cast<uint64_t>(key.dpi_x) << 16 | key.dpi_y);
-  result = mix(result, static_cast<uint64_t>(key.x_phase) << 24 |
-                           static_cast<uint64_t>(key.gamma_64) << 16 |
-                           static_cast<uint64_t>(key.contrast_64) << 8 | key.stem_64);
+  result = mix(result, static_cast<uint64_t>(key.x_phase) << 32 |
+                           static_cast<uint64_t>(key.y_phase) << 24 |
+                           static_cast<uint64_t>(key.raster_filter) << 20 |
+                           static_cast<uint64_t>(key.gamma_64) << 12 |
+                           static_cast<uint64_t>(key.contrast_64) << 4 | (key.stem_64 & 0xf));
+  result = mix(result, static_cast<uint64_t>(key.stem_64) >> 4);
   result = mix(result, static_cast<uint64_t>(key.synthetic_64) << 8 | key.hinted);
+  result = mix(result, key.optical_64);
   return result;
 }
 

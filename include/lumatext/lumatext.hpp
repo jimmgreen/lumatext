@@ -39,6 +39,7 @@ using FontFace = Handle<lt_font_face>;
 using FontCascade = Handle<lt_font_cascade>;
 using TextLayout = Handle<lt_text_layout>;
 using RenderProfile = Handle<lt_render_profile>;
+using GlyphImage = Handle<lt_glyph_image>;
 
 template <typename T>
 T Descriptor() noexcept {

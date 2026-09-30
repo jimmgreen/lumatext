@@ -60,11 +60,50 @@ def glyph_origin_errors(reference, candidate, scale):
     return float(np.sqrt(np.mean(values * values))), float(np.max(values))
 
 
+def raster_metrics(mask: np.ndarray):
+    """Return stable grayscale edge/halo/stem measurements for A/B reports."""
+    ink = mask > (1.0 / 255.0)
+    if not np.any(ink):
+        return {"edgeMaxAlpha": 0.0, "edgeMeanAlpha": 0.0,
+                "haloPixels": 0, "horizontalStrokePx": 0.0,
+                "verticalStrokePx": 0.0, "strokeAxisDeltaPx": 0.0}
+
+    padded = np.pad(ink, 1, mode="constant", constant_values=False)
+    interior = padded[1:-1, 1:-1]
+    edge = interior & (~padded[:-2, 1:-1] | ~padded[2:, 1:-1] |
+                       ~padded[1:-1, :-2] | ~padded[1:-1, 2:])
+    edge_alpha = mask[edge]
+    core = mask >= 0.5
+
+    horizontal = []
+    for row in core:
+        columns = np.flatnonzero(row)
+        if columns.size >= 2:
+            horizontal.append(float(columns[-1] - columns[0] + 1))
+    vertical = []
+    for column in core.T:
+        rows = np.flatnonzero(column)
+        if rows.size >= 2:
+            vertical.append(float(rows[-1] - rows[0] + 1))
+    horizontal_mean = float(np.mean(horizontal)) if horizontal else 0.0
+    vertical_mean = float(np.mean(vertical)) if vertical else 0.0
+    return {
+        "edgeMaxAlpha": float(np.max(edge_alpha)),
+        "edgeMeanAlpha": float(np.mean(edge_alpha)),
+        "haloPixels": int(np.count_nonzero((mask > 0.0) & (mask < 0.08))),
+        "horizontalStrokePx": horizontal_mean,
+        "verticalStrokePx": vertical_mean,
+        "strokeAxisDeltaPx": abs(horizontal_mean - vertical_mean),
+    }
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--coretext", required=True, type=pathlib.Path)
     parser.add_argument("--lumatext", required=True, type=pathlib.Path)
     parser.add_argument("--output", required=True, type=pathlib.Path)
+    parser.add_argument("--allow-font-mismatch", action="store_true",
+                        help="compare different font builds and record both identities")
     args = parser.parse_args()
     args.output.mkdir(parents=True, exist_ok=True)
     overlays = args.output / "overlays"
@@ -72,8 +111,10 @@ def main() -> int:
 
     core_manifest = json.loads((args.coretext / "manifest.json").read_text("utf-8"))
     luma_manifest = json.loads((args.lumatext / "manifest.json").read_text("utf-8"))
-    if core_manifest["regularSHA256"] != luma_manifest["regularSHA256"] or \
-       core_manifest["boldSHA256"] != luma_manifest["boldSHA256"]:
+    font_identity_matches = (
+        core_manifest["regularSHA256"] == luma_manifest["regularSHA256"] and
+        core_manifest["boldSHA256"] == luma_manifest["boldSHA256"])
+    if not font_identity_matches and not args.allow_font_mismatch:
         raise RuntimeError("font hashes differ between CoreText and LumaText artifacts")
 
     core_records = {record_key(value): value for value in core_manifest["records"]
@@ -91,6 +132,8 @@ def main() -> int:
             raise RuntimeError(f"image dimensions differ for {key}")
         dx, dy, candidate = align(reference, candidate)
         ssim = float(structural_similarity(reference, candidate, data_range=1.0))
+        reference_metrics = raster_metrics(reference)
+        candidate_metrics = raster_metrics(candidate)
         reference_total = max(float(np.sum(reference)), 1e-6)
         coverage_difference = abs(float(np.sum(candidate)) - reference_total) / reference_total
         scale = float(core["scale"])
@@ -104,6 +147,18 @@ def main() -> int:
             "alignment": {"dx": dx, "dy": dy}, "lineWidthErrorPx": line_width_error,
             "glyphOriginRMSPx": origin_rms, "glyphOriginMaxPx": origin_max,
             "coverageDifference": coverage_difference, "ssim": ssim, "passed": passed,
+            "referenceMetrics": reference_metrics,
+            "candidateMetrics": candidate_metrics,
+            "metricDelta": {
+                "edgeMaxAlpha": candidate_metrics["edgeMaxAlpha"] -
+                    reference_metrics["edgeMaxAlpha"],
+                "edgeMeanAlpha": candidate_metrics["edgeMeanAlpha"] -
+                    reference_metrics["edgeMeanAlpha"],
+                "haloPixels": candidate_metrics["haloPixels"] -
+                    reference_metrics["haloPixels"],
+                "strokeAxisDeltaPx": candidate_metrics["strokeAxisDeltaPx"] -
+                    reference_metrics["strokeAxisDeltaPx"],
+            },
         }
         results.append(result)
         overlay = np.zeros((*reference.shape, 3), dtype=np.float32)
@@ -120,6 +175,10 @@ def main() -> int:
         "coretext": {"osBuild": core_manifest["osBuild"],
                      "regularSHA256": core_manifest["regularSHA256"],
                      "boldSHA256": core_manifest["boldSHA256"]},
+        "lumatext": {"osBuild": luma_manifest["osBuild"],
+                     "regularSHA256": luma_manifest["regularSHA256"],
+                     "boldSHA256": luma_manifest["boldSHA256"]},
+        "fontIdentityMatches": font_identity_matches,
         "results": results,
         "passed": not failed and bool(results),
     }

@@ -39,6 +39,21 @@ std::wstring argument(int argc, wchar_t** argv, const wchar_t* name) {
   return {};
 }
 
+float float_argument(int argc, wchar_t** argv, const wchar_t* name, float fallback) {
+  const std::wstring value = argument(argc, argv, name);
+  if (value.empty()) return fallback;
+  wchar_t* end = nullptr;
+  const float parsed = std::wcstof(value.c_str(), &end);
+  return end && *end == L'\0' && std::isfinite(parsed) ? parsed : fallback;
+}
+
+uint8_t filter_argument(int argc, wchar_t** argv) {
+  const std::wstring value = argument(argc, argv, L"--filter");
+  if (value == L"direct") return LT_RASTER_FILTER_DIRECT;
+  if (value == L"box") return LT_RASTER_FILTER_BOX;
+  return LT_RASTER_FILTER_MITCHELL;
+}
+
 std::string utf8(const wchar_t* text) {
   if (!text) return {};
   const int length = WideCharToMultiByte(CP_UTF8, 0, text, -1, nullptr, 0, nullptr, nullptr);
@@ -148,6 +163,10 @@ int wmain(int argc, wchar_t** argv) {
   const std::wstring regular_path = argument(argc, argv, L"--regular");
   const std::wstring bold_path = argument(argc, argv, L"--bold");
   const std::filesystem::path output_path = argument(argc, argv, L"--output");
+  const float gamma = float_argument(argc, argv, L"--gamma", 0.43f);
+  const float contrast = float_argument(argc, argv, L"--contrast", 1.92f);
+  const float stem = float_argument(argc, argv, L"--stem", 0.0f);
+  const uint8_t filter = filter_argument(argc, argv);
   if (regular_path.empty() || bold_path.empty() || output_path.empty()) return 2;
   std::filesystem::create_directories(output_path);
   if (FAILED(CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED))) return 3;
@@ -181,6 +200,10 @@ int wmain(int argc, wchar_t** argv) {
   std::ofstream manifest(output_path / "manifest.json", std::ios::binary);
   manifest << "{\n  \"renderer\": \"LumaText\",\n"
            << "  \"osBuild\": \"Windows\",\n"
+           << "  \"coverageGamma\": " << gamma << ",\n"
+           << "  \"coverageContrast\": " << contrast << ",\n"
+           << "  \"stemStrength\": " << stem << ",\n"
+           << "  \"rasterFilter\": " << static_cast<unsigned>(filter) << ",\n"
            << "  \"regularSHA256\": " << json_string(sha256(regular_path)) << ",\n"
            << "  \"boldSHA256\": " << json_string(sha256(bold_path)) << ",\n"
            << "  \"records\": [\n";
@@ -239,9 +262,10 @@ int wmain(int argc, wchar_t** argv) {
         }
         draw.background_type = LT_BACKGROUND_SOLID;
         draw.render_config = LumaText::Descriptor<lt_render_config>();
-        draw.render_config.coverage_gamma = 0.43f;
-        draw.render_config.coverage_contrast = 1.92f;
-        draw.render_config.stem_strength = 0.0f;
+        draw.render_config.coverage_gamma = gamma;
+        draw.render_config.coverage_contrast = contrast;
+        draw.render_config.stem_strength = stem;
+        draw.render_config.raster_filter = filter;
         if (lt_frame_draw_text_layout(draw_frame.get(), layout.get(), &draw) != LT_OK ||
             lt_frame_end(draw_frame.get()) != LT_OK) return 14;
         const std::string image_name = std::string(item.name) + "__" + background_name +

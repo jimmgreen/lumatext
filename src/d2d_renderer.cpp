@@ -5,8 +5,14 @@
 
 namespace {
 
+uint8_t phase_for(double physical) noexcept {
+  const int64_t eighth = static_cast<int64_t>(std::llround(physical * 8.0));
+  return static_cast<uint8_t>((eighth % 8 + 8) % 8);
+}
+
 lt::GlyphKey make_key(UINT16 glyph_index, FLOAT em_size, float dpi_x, float dpi_y,
-                      float baseline_x, const lt_render_config& config) noexcept {
+                      float baseline_x, float baseline_y,
+                      const lt_render_config& config) noexcept {
   const double physical_x = baseline_x * dpi_x / 96.0;
   const int64_t eighth_pixel_position = static_cast<int64_t>(std::llround(physical_x * 8.0));
   const int64_t normalized_phase = (eighth_pixel_position % 8 + 8) % 8;
@@ -18,10 +24,17 @@ lt::GlyphKey make_key(UINT16 glyph_index, FLOAT em_size, float dpi_x, float dpi_
   key.dpi_x = static_cast<uint16_t>(std::clamp(std::lround(dpi_x), 1l, 65535l));
   key.dpi_y = static_cast<uint16_t>(std::clamp(std::lround(dpi_y), 1l, 65535l));
   key.x_phase = static_cast<uint8_t>(normalized_phase);
+  key.y_phase = phase_for(static_cast<double>(baseline_y) * dpi_y / 96.0);
+  key.raster_filter = config.raster_filter == LT_RASTER_FILTER_DIRECT ||
+      config.raster_filter == LT_RASTER_FILTER_BOX ||
+      config.raster_filter == LT_RASTER_FILTER_MITCHELL
+      ? config.raster_filter : LT_RASTER_FILTER_MITCHELL;
   key.gamma_64 = static_cast<uint8_t>(std::clamp(
-      std::lround(lt::finite_or(config.coverage_gamma, 1.00f) * 64.0f), 16l, 255l));
+      std::lround(lt::finite_or(config.coverage_gamma,
+                               lt::kDefaultCoverageGamma) * 64.0f), 16l, 255l));
   key.contrast_64 = static_cast<uint8_t>(std::clamp(
-      std::lround(lt::finite_or(config.coverage_contrast, 1.00f) * 64.0f), 16l, 255l));
+      std::lround(lt::finite_or(config.coverage_contrast,
+                               lt::kDefaultCoverageContrast) * 64.0f), 16l, 255l));
   const float stem = (config.flags & LT_RENDER_CONFIG_DISABLE_STEM_COMPENSATION)
       ? 0.0f : std::max(0.0f, lt::finite_or(config.stem_strength, 0.06f));
   key.stem_64 = static_cast<uint8_t>(std::clamp(std::lround(stem * 64.0f), 0l, 64l));
@@ -115,6 +128,7 @@ class LayoutRenderer final : public IDWriteTextRenderer {
       const float glyph_baseline_y = baseline_y - offset.ascenderOffset;
       lt::GlyphKey key = make_key(glyph_run->glyphIndices[index], glyph_run->fontEmSize,
                                   frame_->dpi_x, frame_->dpi_y, glyph_baseline_x,
+                                  glyph_baseline_y,
                                   desc_.render_config);
       std::shared_ptr<const lt::GlyphBitmap> bitmap;
       bool cache_hit = false;
@@ -132,7 +146,7 @@ class LayoutRenderer final : public IDWriteTextRenderer {
       frame_->stats.freetype_glyphs++;
       if (cache_hit) frame_->stats.glyph_cache_hits++;
       else frame_->stats.glyph_cache_misses++;
-      draw_bitmap(glyph_baseline_x, glyph_baseline_y, *bitmap);
+      draw_bitmap(glyph_baseline_x, glyph_baseline_y, std::move(bitmap));
       if (glyph_run->glyphAdvances) pen += glyph_run->glyphAdvances[index];
     }
     return S_OK;
@@ -185,27 +199,42 @@ class LayoutRenderer final : public IDWriteTextRenderer {
   }
 
   void draw_bitmap(float baseline_x, float baseline_y,
-                   const lt::GlyphBitmap& bitmap) noexcept {
+                   std::shared_ptr<const lt::GlyphBitmap> bitmap_ref) noexcept {
+    if (!bitmap_ref) return;
+    const lt::GlyphBitmap& bitmap = *bitmap_ref;
     if (bitmap.width == 0 || bitmap.height == 0) return;
     const float width_dip = bitmap.width * 96.0f / frame_->dpi_x;
     const float height_dip = bitmap.height * 96.0f / frame_->dpi_y;
     const double quantized_x = std::round(
         static_cast<double>(baseline_x) * frame_->dpi_x / 96.0 * 8.0) / 8.0;
     const double mask_origin_x = std::floor(quantized_x);
-    const double mask_origin_y = std::round(
-        static_cast<double>(baseline_y) * frame_->dpi_y / 96.0);
+    const double quantized_y = std::round(
+        static_cast<double>(baseline_y) * frame_->dpi_y / 96.0 * 8.0) / 8.0;
+    const double mask_origin_y = std::floor(quantized_y);
     const float left = static_cast<float>(
         (mask_origin_x + bitmap.left) * 96.0 / frame_->dpi_x);
     const float top = static_cast<float>(
         (mask_origin_y - bitmap.top) * 96.0 / frame_->dpi_y);
-    const D2D1_BITMAP_PROPERTIES properties = D2D1::BitmapProperties(
-        D2D1::PixelFormat(DXGI_FORMAT_A8_UNORM, D2D1_ALPHA_MODE_STRAIGHT),
-        frame_->dpi_x, frame_->dpi_y);
     lt::ComPtr<ID2D1Bitmap> mask;
-    HRESULT hr = frame_->renderer->d2d_target->CreateBitmap(
-        D2D1::SizeU(bitmap.width, bitmap.height), bitmap.pixels.data(), bitmap.width,
-        properties, &mask);
-    if (FAILED(hr)) return;
+    auto cached = frame_->renderer->a8_bitmap_cache.find(&bitmap);
+    if (cached != frame_->renderer->a8_bitmap_cache.end()) {
+      mask = cached->second;
+    } else {
+      const D2D1_BITMAP_PROPERTIES properties = D2D1::BitmapProperties(
+          D2D1::PixelFormat(DXGI_FORMAT_A8_UNORM, D2D1_ALPHA_MODE_STRAIGHT),
+          frame_->dpi_x, frame_->dpi_y);
+      HRESULT hr = frame_->renderer->d2d_target->CreateBitmap(
+          D2D1::SizeU(bitmap.width, bitmap.height), bitmap.pixels.data(), bitmap.width,
+          properties, &mask);
+      if (FAILED(hr)) return;
+      if (frame_->renderer->a8_bitmap_cache.size() >= 512) {
+        const auto victim = frame_->renderer->a8_bitmap_cache.begin();
+        frame_->renderer->a8_bitmap_owners.erase(victim->first);
+        frame_->renderer->a8_bitmap_cache.erase(victim);
+      }
+      frame_->renderer->a8_bitmap_cache.emplace(&bitmap, mask);
+      frame_->renderer->a8_bitmap_owners.emplace(&bitmap, std::move(bitmap_ref));
+    }
     const D2D1_RECT_F destination = D2D1::RectF(left, top, left + width_dip, top + height_dip);
     const D2D1_RECT_F source = D2D1::RectF(0.0f, 0.0f, width_dip, height_dip);
     frame_->renderer->d2d_target->FillOpacityMask(

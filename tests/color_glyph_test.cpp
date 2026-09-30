@@ -106,5 +106,46 @@ int main() {
     }
   }
   CHECK(chromatic_pixel);
+  lock.Reset();
+
+  // Palette layers must respect the same foreground opacity as monochrome text.
+  draw.background_type = LT_BACKGROUND_TRANSPARENT;
+  uint64_t opaque_alpha_sum = 0;
+  for (float opacity : {1.0f, 0.5f, 0.0f}) {
+    CHECK(lt_frame_begin(renderer.get(), &frame_desc, frame.put()) == LT_OK);
+    target->Clear(D2D1::ColorF(0.0f, 0.0f, 0.0f, 0.0f));
+    draw.foreground.a = opacity;
+    CHECK(lt_frame_draw_text_layout(frame.get(), layout.get(), &draw) == LT_OK);
+    CHECK(lt_frame_end(frame.get()) == LT_OK);
+    CHECK(SUCCEEDED(surface->Lock(&area, WICBitmapLockRead, &lock)));
+    CHECK(SUCCEEDED(lock->GetStride(&stride)));
+    CHECK(SUCCEEDED(lock->GetDataPointer(&byte_count, &pixels)));
+    uint64_t alpha_sum = 0;
+    bool half_opaque_color = false;
+    for (int row = 0; row < 120; ++row) {
+      for (int column = 0; column < 240; ++column) {
+        const BYTE* pixel = pixels + static_cast<size_t>(row) * stride + column * 4;
+        alpha_sum += pixel[3];
+        const BYTE minimum = std::min({pixel[0], pixel[1], pixel[2]});
+        const BYTE maximum = std::max({pixel[0], pixel[1], pixel[2]});
+        half_opaque_color = half_opaque_color ||
+            (pixel[3] >= 126 && pixel[3] <= 129 && maximum - minimum >= 12);
+        if (opacity == 0.0f) {
+          CHECK(pixel[0] == 0 && pixel[1] == 0 && pixel[2] == 0 && pixel[3] == 0);
+        }
+      }
+    }
+    if (opacity == 1.0f) {
+      opaque_alpha_sum = alpha_sum;
+      CHECK(opaque_alpha_sum > 0);
+    } else if (opacity == 0.5f) {
+      // Overlapping palette layers may exceed half opacity after compositing.
+      CHECK(alpha_sum > 0 && alpha_sum < opaque_alpha_sum);
+      CHECK(half_opaque_color);
+    } else {
+      CHECK(alpha_sum == 0);
+    }
+    lock.Reset();
+  }
   return 0;
 }

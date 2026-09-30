@@ -16,6 +16,35 @@ option(LUMATEXT_BUILD_SAMPLES "Build sample applications" ON)
 option(LUMATEXT_BUILD_TESTS "Build tests" ON)
 option(LUMATEXT_BUILD_REFERENCE_TOOLS "Build CI reference tools" OFF)
 option(LUMATEXT_USE_SYSTEM_FREETYPE "Use an installed FreeType package" OFF)
+option(LUMATEXT_OPTIMIZE_RELEASE_SIZE "Optimize Release DLL size without removing font features" ON)
+
+if(MSVC AND LUMATEXT_OPTIMIZE_RELEASE_SIZE)
+  include(CheckIPOSupported)
+  check_ipo_supported(RESULT lumatext_ipo_supported OUTPUT lumatext_ipo_error LANGUAGES C CXX)
+  if(NOT lumatext_ipo_supported)
+    message(FATAL_ERROR "LumaText size optimization requires IPO: ${lumatext_ipo_error}. Set LUMATEXT_OPTIMIZE_RELEASE_SIZE=OFF to disable it.")
+  endif()
+  # FreeType's older minimum CMake version otherwise disables IPO on its target.
+  set(CMAKE_POLICY_DEFAULT_CMP0069 NEW)
+endif()
+
+function(lumatext_optimize_release target favor_size)
+  if(MSVC AND LUMATEXT_OPTIMIZE_RELEASE_SIZE)
+    set_target_properties(${target} PROPERTIES
+      INTERPROCEDURAL_OPTIMIZATION_RELEASE TRUE
+      INTERPROCEDURAL_OPTIMIZATION_MINSIZEREL TRUE)
+    target_compile_options(${target} PRIVATE
+      $<$<CONFIG:Release,MinSizeRel>:/Gw>)
+    if(favor_size)
+      target_compile_options(${target} PRIVATE $<$<CONFIG:Release,MinSizeRel>:/Os>)
+    endif()
+    get_target_property(lumatext_target_type ${target} TYPE)
+    if(lumatext_target_type STREQUAL "SHARED_LIBRARY")
+      target_link_options(${target} PRIVATE
+        $<$<CONFIG:Release,MinSizeRel>:/OPT:REF,ICF>)
+    endif()
+  endif()
+endfunction()
 set(LUMATEXT_UNICODE_TEST_DATA "" CACHE FILEPATH
   "Optional path to Unicode GraphemeBreakTest.txt")
 
@@ -26,7 +55,12 @@ endif()
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
-set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL")
+# Embed the runtime for a self-contained DLL; honor consumer/toolchain overrides.
+if(NOT DEFINED CMAKE_MSVC_RUNTIME_LIBRARY)
+  set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+endif()
+file(GENERATE OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/sdk-runtime-$<CONFIG>.txt"
+  CONTENT "${CMAKE_MSVC_RUNTIME_LIBRARY}\n")
 
 FetchContent_Declare(
   harfbuzz
@@ -41,6 +75,7 @@ add_library(lumatext_harfbuzz OBJECT
 target_include_directories(lumatext_harfbuzz SYSTEM PUBLIC
   "${harfbuzz_SOURCE_DIR}/src")
 target_compile_definitions(lumatext_harfbuzz PRIVATE HB_STATIC)
+lumatext_optimize_release(lumatext_harfbuzz TRUE)
 target_compile_options(lumatext_harfbuzz PRIVATE
   $<$<CXX_COMPILER_ID:MSVC>:/W0 /bigobj /EHsc /utf-8>)
 
@@ -62,6 +97,7 @@ else()
     URL_HASH SHA256=bc5c898e4756d373e0d991bab053036c5eb2aa7c0d5c67e8662ddc6da40c4103
     DOWNLOAD_EXTRACT_TIMESTAMP TRUE)
   FetchContent_MakeAvailable(freetype)
+  lumatext_optimize_release(freetype TRUE)
   if(NOT TARGET Freetype::Freetype)
     add_library(Freetype::Freetype ALIAS freetype)
   endif()
@@ -76,6 +112,7 @@ set(LUMATEXT_SOURCES
   src/d2d_renderer.cpp
   src/font_face.cpp
   src/font_bridge.cpp
+  src/glyph_provider.cpp
   src/line_renderer.cpp
   src/rasterizer.cpp
   src/text_layout.cpp
@@ -83,6 +120,7 @@ set(LUMATEXT_SOURCES
 
 function(lumatext_configure_target target)
   target_sources(${target} PRIVATE ${LUMATEXT_SOURCES})
+  lumatext_optimize_release(${target} FALSE)
   target_include_directories(${target}
     PUBLIC
       $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
@@ -167,6 +205,7 @@ endfunction()
 
 if(LUMATEXT_BUILD_SAMPLES)
   add_subdirectory(samples/gallery)
+  add_subdirectory(samples/compare)
 endif()
 
 if(LUMATEXT_BUILD_TESTS)

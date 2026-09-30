@@ -1,4 +1,5 @@
 #include "internal.hpp"
+#include <array>
 
 namespace {
 
@@ -31,6 +32,20 @@ uint8_t calibrate(uint8_t coverage, const lt::GlyphKey& key) noexcept {
   return static_cast<uint8_t>(std::lround(std::clamp(value, 0.0f, 1.0f) * 255.0f));
 }
 
+const std::array<uint8_t, 256>& coverage_table(const lt::GlyphKey& key) noexcept {
+  thread_local std::array<uint8_t, 256> table{};
+  thread_local int gamma = -1;
+  thread_local int contrast = -1;
+  if (gamma != key.gamma_64 || contrast != key.contrast_64) {
+    for (unsigned value = 0; value < table.size(); ++value) {
+      table[value] = calibrate(static_cast<uint8_t>(value), key);
+    }
+    gamma = key.gamma_64;
+    contrast = key.contrast_64;
+  }
+  return table;
+}
+
 double mitchell(double value) noexcept {
   constexpr double b = 1.0 / 3.0;
   constexpr double c = 1.0 / 3.0;
@@ -45,6 +60,42 @@ double mitchell(double value) noexcept {
             (-12.0 * b - 48.0 * c) * x + (8.0 * b + 24.0 * c)) / 6.0;
   }
   return 0.0;
+}
+
+double box_area(double value) noexcept {
+  // Integrate one 4x source pixel over a destination pixel.
+  const double overlap = std::max(0.0, std::min(0.5, value + 0.125) -
+      std::max(-0.5, value - 0.125));
+  return overlap / 0.25;
+}
+
+double filter_weight(double value, uint8_t filter) noexcept {
+  return filter == LT_RASTER_FILTER_BOX ? box_area(value) : mitchell(value);
+}
+
+std::shared_ptr<lt::GlyphBitmap> direct_bitmap(const FT_GlyphSlot slot,
+                                               const lt::GlyphKey& key) {
+  const FT_Bitmap& source = slot->bitmap;
+  constexpr int padding = 1;
+  const auto& coverage = coverage_table(key);
+  auto output = std::make_shared<lt::GlyphBitmap>();
+  output->left = slot->bitmap_left - padding;
+  output->top = slot->bitmap_top + padding;
+  output->width = source.width + padding * 2;
+  output->height = source.rows + padding * 2;
+  output->pixels.assign(static_cast<size_t>(output->width) * output->height, 0);
+  const int pitch = source.pitch;
+  for (uint32_t row = 0; row < source.rows; ++row) {
+    const uint8_t* source_row = pitch >= 0
+        ? source.buffer + static_cast<size_t>(row) * pitch
+        : source.buffer + static_cast<size_t>(source.rows - 1 - row) *
+              static_cast<size_t>(-pitch);
+    for (uint32_t column = 0; column < source.width; ++column) {
+      output->pixels[static_cast<size_t>(row + padding) * output->width +
+                     column + padding] = coverage[source_row[column]];
+    }
+  }
+  return output;
 }
 
 std::shared_ptr<lt::GlyphBitmap> downsample(const FT_GlyphSlot slot,
@@ -70,6 +121,27 @@ std::shared_ptr<lt::GlyphBitmap> downsample(const FT_GlyphSlot slot,
   if (source.width == 0 || source.rows == 0 || output->pixels.empty()) return output;
 
   std::vector<double> horizontal(static_cast<size_t>(source.rows) * output->width);
+  const auto& coverage_lut = coverage_table(key);
+  struct Kernel {
+    int first = 0;
+    int last = 0;
+    std::array<double, 19> weights{};
+    double total = 0.0;
+  };
+  // Every source row uses the same horizontal sampling positions.
+  std::vector<Kernel> kernels(output->width);
+  for (uint32_t column = 0; column < output->width; ++column) {
+    auto& kernel = kernels[column];
+    const double center = static_cast<double>(output_left) + column + 0.5;
+    kernel.first = static_cast<int>(std::floor((center - 2.0) * scale - source_left - 0.5));
+    kernel.last = static_cast<int>(std::ceil((center + 2.0) * scale - source_left - 0.5));
+    for (int sample = kernel.first; sample <= kernel.last; ++sample) {
+      const double weight = filter_weight(
+          (source_left + sample + 0.5) / scale - center, key.raster_filter);
+      kernel.weights[sample - kernel.first] = weight;
+      kernel.total += weight;
+    }
+  }
   const int pitch = source.pitch;
   for (uint32_t row = 0; row < source.rows; ++row) {
     const uint8_t* source_row = pitch >= 0
@@ -77,24 +149,16 @@ std::shared_ptr<lt::GlyphBitmap> downsample(const FT_GlyphSlot slot,
         : source.buffer + static_cast<size_t>(source.rows - 1 - row) *
               static_cast<size_t>(-pitch);
     for (uint32_t column = 0; column < output->width; ++column) {
-      const double destination_center =
-          static_cast<double>(output_left) + static_cast<double>(column) + 0.5;
-      const int first = static_cast<int>(std::floor(
-          (destination_center - 2.0) * scale - source_left - 0.5));
-      const int last = static_cast<int>(std::ceil(
-          (destination_center + 2.0) * scale - source_left - 0.5));
+      const auto& kernel = kernels[column];
       double sum = 0.0;
-      double weights = 0.0;
-      for (int sample = first; sample <= last; ++sample) {
-        const double sample_center = (source_left + sample + 0.5) / scale;
-        const double weight = mitchell(sample_center - destination_center);
-        weights += weight;
+      for (int sample = kernel.first; sample <= kernel.last; ++sample) {
+        const double weight = kernel.weights[sample - kernel.first];
         if (sample >= 0 && sample < static_cast<int>(source.width)) {
           sum += weight * source_row[sample];
         }
       }
       horizontal[static_cast<size_t>(row) * output->width + column] =
-          weights != 0.0 ? sum / weights : 0.0;
+          kernel.total != 0.0 ? sum / kernel.total : 0.0;
     }
   }
 
@@ -105,13 +169,19 @@ std::shared_ptr<lt::GlyphBitmap> downsample(const FT_GlyphSlot slot,
         source_top - (destination_center + 2.0) * scale - 0.5));
     const int last = static_cast<int>(std::ceil(
         source_top - (destination_center - 2.0) * scale - 0.5));
+    std::array<double, 19> kernel{};
+    double weights = 0.0;
+    for (int sample = first; sample <= last; ++sample) {
+      const double sample_center = source_top / 4.0 - (sample + 0.5) / scale;
+      const double weight = filter_weight(sample_center - destination_center,
+                                           key.raster_filter);
+      kernel[sample - first] = weight;
+      weights += weight;
+    }
     for (uint32_t column = 0; column < output->width; ++column) {
       double sum = 0.0;
-      double weights = 0.0;
       for (int sample = first; sample <= last; ++sample) {
-        const double sample_center = source_top / 4.0 - (sample + 0.5) / scale;
-        const double weight = mitchell(sample_center - destination_center);
-        weights += weight;
+        const double weight = kernel[sample - first];
         if (sample >= 0 && sample < static_cast<int>(source.rows)) {
           sum += weight * horizontal[static_cast<size_t>(sample) * output->width + column];
         }
@@ -120,7 +190,7 @@ std::shared_ptr<lt::GlyphBitmap> downsample(const FT_GlyphSlot slot,
       const uint8_t coverage = static_cast<uint8_t>(std::lround(
           std::clamp(value, 0.0, 255.0)));
       output->pixels[static_cast<size_t>(row) * output->width + column] =
-          calibrate(coverage, key);
+          coverage_lut[coverage];
     }
   }
   return output;
@@ -130,14 +200,14 @@ std::shared_ptr<lt::GlyphBitmap> downsample(const FT_GlyphSlot slot,
 
 lt_result lt::Rasterizer::render(std::shared_ptr<const FontBlob> font, const GlyphKey& key,
                                  std::shared_ptr<const GlyphBitmap>& out) {
-  if (!thread_ft.library || !font || font->bytes.empty()) return LT_E_FONT_UNAVAILABLE;
+  if (!thread_ft.library || !font || font->empty()) return LT_E_FONT_UNAVAILABLE;
 
   FT_Face face = nullptr;
   auto found = thread_ft.faces.find(font->identity);
   if (found == thread_ft.faces.end()) {
     FT_Error error = FT_New_Memory_Face(
-        thread_ft.library, font->bytes.data(),
-        static_cast<FT_Long>(font->bytes.size()), font->face_index, &face);
+        thread_ft.library, font->data(),
+        static_cast<FT_Long>(font->size()), font->face_index, &face);
     if (error != 0 || !face) return LT_E_FONT_UNAVAILABLE;
     if (!font->axes.empty()) {
       FT_MM_Var* variation = nullptr;
@@ -172,16 +242,19 @@ lt_result lt::Rasterizer::render(std::shared_ptr<const FontBlob> font, const Gly
     face = found->second.face;
   }
 
+  const bool direct = key.raster_filter == LT_RASTER_FILTER_DIRECT;
   const FT_F26Dot6 point_size = static_cast<FT_F26Dot6>(
       std::lround((key.em_size_26_6 / 64.0) * 48.0));
   if (FT_Set_Char_Size(face, 0, point_size,
-                       static_cast<FT_UInt>(key.dpi_x) * 4,
-                       static_cast<FT_UInt>(key.dpi_y) * 4) != 0) {
+                       static_cast<FT_UInt>(key.dpi_x) * (direct ? 1 : 4),
+                       static_cast<FT_UInt>(key.dpi_y) * (direct ? 1 : 4)) != 0) {
     return LT_E_FONT_UNAVAILABLE;
   }
 
   FT_Matrix matrix{1L << 16, 0, 0, 1L << 16};
-  FT_Vector delta{static_cast<FT_Pos>(key.x_phase) * 32, 0};
+  const FT_Pos phase_scale = direct ? 8 : 32;
+  FT_Vector delta{static_cast<FT_Pos>(key.x_phase) * phase_scale,
+                  -static_cast<FT_Pos>(key.y_phase) * phase_scale};
   FT_Set_Transform(face, &matrix, &delta);
   FT_Int32 load_flags = FT_LOAD_DEFAULT | FT_LOAD_NO_BITMAP;
   if (!key.hinted) load_flags |= FT_LOAD_NO_HINTING | FT_LOAD_NO_AUTOHINT;
@@ -190,10 +263,11 @@ lt_result lt::Rasterizer::render(std::shared_ptr<const FontBlob> font, const Gly
     return LT_E_FONT_UNAVAILABLE;
   }
 
-  if ((key.stem_64 != 0 || key.synthetic_64 != 0) &&
-      !(face->style_flags & FT_STYLE_FLAG_BOLD) &&
+  const FT_Pos legacy_strength = (face->style_flags & FT_STYLE_FLAG_BOLD)
+      ? 0 : key.stem_64 + key.synthetic_64;
+  if ((legacy_strength != 0 || key.optical_64 != 0) &&
       face->glyph->format == FT_GLYPH_FORMAT_OUTLINE) {
-    const FT_Pos strength = static_cast<FT_Pos>(key.stem_64 + key.synthetic_64) * 4;
+    const FT_Pos strength = (legacy_strength + key.optical_64) * (direct ? 1 : 4);
     FT_Outline_EmboldenXY(&face->glyph->outline, strength, 0);
   }
   if (FT_Render_Glyph(face->glyph, FT_RENDER_MODE_NORMAL) != 0) {
@@ -208,7 +282,11 @@ lt_result lt::Rasterizer::render(std::shared_ptr<const FontBlob> font, const Gly
   }
 
   try {
-    out = downsample(face->glyph, key);
+    auto rendered = direct ? direct_bitmap(face->glyph, key)
+                           : downsample(face->glyph, key);
+    rendered->advance = static_cast<float>(face->glyph->metrics.horiAdvance) /
+        (direct ? 64.0f : 256.0f);
+    out = std::move(rendered);
   } catch (...) {
     return LT_E_OUT_OF_MEMORY;
   }

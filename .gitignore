@@ -13,3 +13,8 @@
 *.dll
 *.exe
 
+# Python bytecode caches
+__pycache__/
+*.pyc
+*.pyo
+
