@@ -36,7 +36,7 @@ CMake 默认从带 SHA-256 校验的 FreeType `VER-2-13-3` 和 HarfBuzz `10.4.0`
 
 画廊位于 `build/samples/gallery/lumatext_gallery.exe`。按 `Space` 切换 A/B 视图，按 `D` 切换浅色/深色背景，按 `1/2/3` 切换 direct、4x box、4x Mitchell 滤波。画廊分别展示 Microsoft YaHei UI、Segoe UI、Arial、Consolas，以及中文、emoji 和脚本 fallback。
 
-微软雅黑专用实时对照程序为 `lumatext_compare`，支持左右候选比较、主题/字号/DPI/滤波/光学补偿调节及离屏截图，操作与实验范围见 [对照界面说明](docs/compare-ui.md)。候选效果尚未经过同字体 macOS 实机签收。
+微软雅黑专用实时对照程序为 `lumatext_compare`，支持左右候选比较、主题/字号/DPI/滤波/光学补偿调节及离屏截图，操作与实验范围见 [对照界面说明](docs/compare-ui.md)。候选效果尚未经过同字体 macOS 实机签收。 低 DPI 清晰度的可选像素网格 hint、Direct/Box/Mitchell 对照与验证限制见 [低 DPI 验证说明](docs/low-dpi-validation.md)。
 
 ## 使用
 

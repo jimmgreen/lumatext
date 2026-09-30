@@ -16,7 +16,7 @@
 using Microsoft::WRL::ComPtr;
 namespace {
 constexpr wchar_t sample[] = L"微软雅黑：清晰的文字，安静的阅读。Aa Bb 0123456789";
-enum { Theme = 101, Size, Dpi, Filter, Gamma, Regular, Bold, Phase, Reset, Text, Blend };
+enum { Theme = 101, Size, Dpi, Filter, Gamma, Regular, Bold, Phase, Reset, Text, Blend, Hint };
 struct App {
   ComPtr<ID2D1Factory> factory;
   ComPtr<IDWriteFactory> write;
@@ -28,7 +28,7 @@ struct App {
   LumaText::RenderProfile profile;
   LumaText::Renderer renderer;
   std::array<LumaText::TextLayout, 8> layouts;
-  std::array<HWND, 11> controls{};
+  std::array<HWND, 12> controls{};
   std::vector<HWND> captions;
   HFONT controlFont = nullptr;
   bool dark = false;
@@ -38,6 +38,7 @@ struct App {
   std::wstring text = sample;
   bool dirty = true, updating = false;
   bool blend = true;
+  bool hinted = false;
   int scroll = 0;
   ~App() { if (controlFont) DeleteObject(controlFont); }
 } app;
@@ -48,6 +49,7 @@ lt_render_config config(bool candidate) {
   c.coverage_contrast = 1;
   c.raster_filter = static_cast<uint8_t>(app.filter);
   c.flags = candidate && app.blend ? LT_RENDER_CONFIG_LINEAR_BLEND | LT_RENDER_CONFIG_KNOWN_BACKGROUND : 0;
+  if (candidate && app.hinted) c.flags |= LT_RENDER_CONFIG_HINTED_OUTLINES;
   return c;
 }
 bool rebuild(float width) {
@@ -97,9 +99,9 @@ bool panel(ID2D1RenderTarget* t, float top) {
   t->Clear(bg);
   label(t, brush.Get(), L"微软雅黑渲染对照 · 候选为实验方案，非原生 macOS", 16, top, dimensions.width - 32);
   wchar_t summary[256];
-  swprintf_s(summary, L"字号 %.0f DIP · DPI %.0f · %s · gamma %.2f · 常规补偿 %.3f px · 粗体 %.3f px · 相位 %d/8 px",
+  swprintf_s(summary, L"字号 %.0f DIP · DPI %.0f · %s · gamma %.2f · 常规补偿 %.3f px · 粗体 %.3f px · 相位 %d/8 px · 候选 hint %s",
     app.size, app.dpi, app.filter == 1 ? L"direct" : app.filter == 2 ? L"box" : L"Mitchell",
-    app.gamma, app.regularWeight, app.boldWeight, app.phase);
+    app.gamma, app.regularWeight, app.boldWeight, app.phase, app.hinted ? L"开" : L"关");
   label(t, brush.Get(), summary, 16, top + 32, dimensions.width - 32, 42);
   auto fd = LumaText::Descriptor<lt_frame_desc>(); fd.dpi_x = fd.dpi_y = app.dpi;
   LumaText::Frame frame;
@@ -140,7 +142,7 @@ HWND control(HWND parent, const wchar_t* cls, const wchar_t* text, DWORD style, 
   HWND h = CreateWindowExW(0, cls, text, WS_CHILD | WS_VISIBLE | style, 0, 0, 10, 10,
     parent, reinterpret_cast<HMENU>(static_cast<INT_PTR>(id)), GetModuleHandleW(nullptr), nullptr);
   SendMessageW(h, WM_SETFONT, reinterpret_cast<WPARAM>(app.controlFont), TRUE);
-  if (id >= Theme && id <= Blend) app.controls[static_cast<size_t>(id - Theme)] = h;
+  if (id >= Theme && id <= Hint) app.controls[static_cast<size_t>(id - Theme)] = h;
   return h;
 }
 void update_control_font(HWND window) {
@@ -161,6 +163,7 @@ void defaults() {
   app.updating = true;
   app.dark = false; app.size = 16; app.dpi = 96; app.gamma = .9f;
   app.regularWeight = .02f; app.boldWeight = 0; app.phase = 0; app.filter = 3;
+  app.hinted = false; SendMessageW(get(Hint), BM_SETCHECK, BST_UNCHECKED, 0);
   app.blend = true; app.scroll = 0; SendMessageW(get(Blend), BM_SETCHECK, BST_CHECKED, 0);
   choose(Theme, 0); choose(Size, 2); choose(Dpi, 0); choose(Filter, 2); choose(Phase, 0);
   SetWindowTextW(get(Gamma), L"0.90"); SetWindowTextW(get(Regular), L"0.02"); SetWindowTextW(get(Bold), L"0.00");
@@ -180,6 +183,7 @@ void arrange(HWND window) {
   }
   move(get(Reset), 525, 29, 105, 28);
   move(get(Blend), 525, 80, 210, 28);
+  move(get(Hint), 525, 57, 210, 23);
   move(get(Text), 16, 120, std::max(80, static_cast<int>(r.right / scale) - 32), 30);
 }
 void controls(HWND window) {
@@ -200,6 +204,7 @@ void controls(HWND window) {
   }
   control(window, L"BUTTON", L"恢复默认", BS_PUSHBUTTON | WS_TABSTOP, Reset);
   control(window, L"BUTTON", L"统一背景合成", BS_AUTOCHECKBOX | WS_TABSTOP, Blend);
+  control(window, L"BUTTON", L"候选：像素网格 hint", BS_AUTOCHECKBOX | WS_TABSTOP, Hint);
   control(window, L"EDIT", sample, WS_BORDER | ES_AUTOHSCROLL | WS_TABSTOP, Text);
   defaults(); arrange(window);
 }
@@ -213,6 +218,7 @@ void changed(HWND window, int id) {
   if (id == Reset) defaults();
   else {
     app.dark = chosen(Theme) == 1;
+    app.hinted = SendMessageW(get(Hint), BM_GETCHECK, 0, 0) == BST_CHECKED;
     app.blend = SendMessageW(get(Blend), BM_GETCHECK, 0, 0) == BST_CHECKED;
     if (id == Theme) {
       app.updating = true; SetWindowTextW(get(Gamma), app.dark ? L"1.00" : L"0.90"); app.updating = false;
@@ -232,7 +238,7 @@ LRESULT CALLBACK procedure(HWND w, UINT m, WPARAM wp, LPARAM lp) {
   switch (m) {
     case WM_CREATE: controls(w); return 0;
     case WM_COMMAND:
-      if (HIWORD(wp) == CBN_SELCHANGE || HIWORD(wp) == EN_CHANGE || LOWORD(wp) == Reset || LOWORD(wp) == Blend) changed(w, LOWORD(wp));
+      if (HIWORD(wp) == CBN_SELCHANGE || HIWORD(wp) == EN_CHANGE || LOWORD(wp) == Reset || LOWORD(wp) == Blend || LOWORD(wp) == Hint) changed(w, LOWORD(wp));
       return 0;
     case WM_SIZE:
       if (app.windowTarget) app.windowTarget->Resize(D2D1::SizeU(LOWORD(lp), HIWORD(lp)));
@@ -326,6 +332,17 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show) {
   for (int i = 1; argv && i < argc; ++i) {
     if (wcscmp(argv[i], L"--snapshot") == 0 && i + 1 < argc) output = argv[++i];
     else if (wcscmp(argv[i], L"--dark") == 0) { app.dark = true; app.gamma = 1; }
+    else if (wcscmp(argv[i], L"--hinted") == 0) app.hinted = true;
+    else if (wcscmp(argv[i], L"--isolate-hint") == 0) {
+      app.gamma = .85f; app.regularWeight = app.boldWeight = 0; app.blend = false;
+    }
+    else if (wcscmp(argv[i], L"--filter") == 0 && i + 1 < argc) {
+      const wchar_t* filter = argv[++i];
+      if (wcscmp(filter, L"direct") == 0) app.filter = LT_RASTER_FILTER_DIRECT;
+      else if (wcscmp(filter, L"box") == 0) app.filter = LT_RASTER_FILTER_BOX;
+      else if (wcscmp(filter, L"mitchell") == 0) app.filter = LT_RASTER_FILTER_MITCHELL;
+      else { LocalFree(argv); return 1; }
+    }
     else if (wcscmp(argv[i], L"--no-blend") == 0) app.blend = false;
     else if (wcscmp(argv[i], L"--phase") == 0 && i + 1 < argc) app.phase = std::clamp(_wtoi(argv[++i]), 0, 7);
     else if (wcscmp(argv[i], L"--dpi") == 0 && i + 1 < argc) app.dpi = static_cast<float>(std::clamp(_wtoi(argv[++i]), 96, 192));

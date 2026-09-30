@@ -104,6 +104,42 @@ int main() {
     }
   }
 
+  // Hinted filters must all use the destination-pixel hinting grid. In the old
+  // 4x-hinting path, advances could be quarter pixels rather than the native
+  // hinted metrics. Check both rounded integer and fractional physical ppem.
+  key.hinted = 1;
+  key.y_phase = 0;
+  for (uint16_t dpi : {96, 120, 144, 192}) {
+    key.dpi_x = key.dpi_y = dpi;
+    for (uint32_t em : {10, 13, 16}) {
+      key.em_size_26_6 = em * 64;
+      key.raster_filter = LT_RASTER_FILTER_DIRECT;
+      CHECK(lt::Rasterizer::render(face.get()->blob, key, glyph) == LT_OK);
+      const float native_advance = glyph->advance;
+      CHECK(native_advance > 0);
+      for (uint8_t filter : {LT_RASTER_FILTER_BOX, LT_RASTER_FILTER_MITCHELL}) {
+        key.raster_filter = filter;
+        CHECK(lt::Rasterizer::render(face.get()->blob, key, glyph) == LT_OK);
+        CHECK(glyph->advance == native_advance);
+      }
+    }
+  }
+  // Phases are applied after hinting, at the selected bitmap resolution.
+  key.em_size_26_6 = 32 * 64;
+  key.dpi_x = key.dpi_y = 96;
+  for (uint8_t filter : {LT_RASTER_FILTER_DIRECT, LT_RASTER_FILTER_BOX, LT_RASTER_FILTER_MITCHELL}) {
+    key.raster_filter = filter;
+    double start_y = 0;
+    for (uint8_t phase = 0; phase < 8; ++phase) {
+      key.y_phase = phase;
+      CHECK(lt::Rasterizer::render(face.get()->blob, key, glyph) == LT_OK);
+      const double position = centroid_y(*glyph);
+      if (phase == 0) start_y = position;
+      CHECK(std::abs(position - start_y - phase / 8.0) < 0.10);
+    }
+  }
+  key.hinted = 0;
+
   // Profile compensation is explicit and must also work for real bold outlines.
   source.file_path = L"C:\\Windows\\Fonts\\msyhbd.ttc";
   LumaText::FontFace bold_face;

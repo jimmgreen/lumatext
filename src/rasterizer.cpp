@@ -1,4 +1,5 @@
 #include "internal.hpp"
+#include "raster_scale.hpp"
 #include <array>
 
 namespace {
@@ -243,16 +244,20 @@ lt_result lt::Rasterizer::render(std::shared_ptr<const FontBlob> font, const Gly
   }
 
   const bool direct = key.raster_filter == LT_RASTER_FILTER_DIRECT;
+  const auto scale = raster_scale(direct, key.hinted != 0);
   const FT_F26Dot6 point_size = static_cast<FT_F26Dot6>(
       std::lround((key.em_size_26_6 / 64.0) * 48.0));
   if (FT_Set_Char_Size(face, 0, point_size,
-                       static_cast<FT_UInt>(key.dpi_x) * (direct ? 1 : 4),
-                       static_cast<FT_UInt>(key.dpi_y) * (direct ? 1 : 4)) != 0) {
+                       static_cast<FT_UInt>(key.dpi_x) * scale.size,
+                       static_cast<FT_UInt>(key.dpi_y) * scale.size) != 0) {
     return LT_E_FONT_UNAVAILABLE;
   }
 
-  FT_Matrix matrix{1L << 16, 0, 0, 1L << 16};
-  const FT_Pos phase_scale = direct ? 8 : 32;
+  // FreeType applies this transform after hinting. Hinting at 4x ppem would
+  // snap to quarter pixels after downsampling instead of the destination grid.
+  const FT_Fixed transform = static_cast<FT_Fixed>(scale.transform) << 16;
+  FT_Matrix matrix{transform, 0, 0, transform};
+  const FT_Pos phase_scale = static_cast<FT_Pos>(scale.phase());
   FT_Vector delta{static_cast<FT_Pos>(key.x_phase) * phase_scale,
                   -static_cast<FT_Pos>(key.y_phase) * phase_scale};
   FT_Set_Transform(face, &matrix, &delta);
@@ -267,7 +272,7 @@ lt_result lt::Rasterizer::render(std::shared_ptr<const FontBlob> font, const Gly
       ? 0 : key.stem_64 + key.synthetic_64;
   if ((legacy_strength != 0 || key.optical_64 != 0) &&
       face->glyph->format == FT_GLYPH_FORMAT_OUTLINE) {
-    const FT_Pos strength = (legacy_strength + key.optical_64) * (direct ? 1 : 4);
+    const FT_Pos strength = (legacy_strength + key.optical_64) * scale.bitmap;
     FT_Outline_EmboldenXY(&face->glyph->outline, strength, 0);
   }
   if (FT_Render_Glyph(face->glyph, FT_RENDER_MODE_NORMAL) != 0) {
@@ -284,8 +289,9 @@ lt_result lt::Rasterizer::render(std::shared_ptr<const FontBlob> font, const Gly
   try {
     auto rendered = direct ? direct_bitmap(face->glyph, key)
                            : downsample(face->glyph, key);
+    // metrics are not transformed by FT_Set_Transform, unlike glyph->advance.
     rendered->advance = static_cast<float>(face->glyph->metrics.horiAdvance) /
-        (direct ? 64.0f : 256.0f);
+        static_cast<float>(scale.advance_divisor());
     out = std::move(rendered);
   } catch (...) {
     return LT_E_OUT_OF_MEMORY;

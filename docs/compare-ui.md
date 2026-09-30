@@ -41,3 +41,11 @@ lumatext_compare.exe --snapshot phase.png --phase 7 --no-blend
 ## 验证
 
 Debug/Release 各 10 项测试通过，包含已知背景与实色输出逐像素一致、非法半透明底色拒绝、光学补偿缓存失效及真实粗体补偿、旧 profile 尾字段兼容、垂直相位方向回归。已使用原生窗口检查主题切换与参数编辑，并检查浅色/深色离屏图片。
+
+## 低 DPI hint 候选（2026-09-30）
+
+新增“候选：像素网格 hint”复选框，只作用于右栏，默认关闭。Box/Mitchell
+现在先在实际目标像素网格 hint，再放大轮廓超采样；默认未 hint 管线不变。
+快照新增 `--hinted` 和 `--filter direct|box|mitchell`。恢复默认会关闭 hint。
+这不是已签收的视觉参数；测试步骤与本轮实际验证范围见
+[低 DPI 验证说明](low-dpi-validation.md)。

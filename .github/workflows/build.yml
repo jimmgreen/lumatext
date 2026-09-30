@@ -12,6 +12,7 @@ jobs:
       GRAPHEME_TEST_URL: https://www.unicode.org/Public/16.0.0/ucd/auxiliary/GraphemeBreakTest.txt
       GRAPHEME_TEST_SHA256: ee2b9354d270ac061b29f09662cafea06341d77e704b8cc6bd72aaeeda363cb5
     strategy:
+      fail-fast: false
       matrix:
         configuration: [Debug, Release]
     steps:
@@ -32,9 +33,33 @@ jobs:
           -DLUMATEXT_BUILD_TESTS=ON
           -DLUMATEXT_UNICODE_TEST_DATA=${{ github.workspace }}/out/unicode/GraphemeBreakTest.txt
       - name: Build
+        id: build
         run: cmake --build build --config ${{ matrix.configuration }} --parallel
       - name: Test
         run: ctest --test-dir build -C ${{ matrix.configuration }} --output-on-failure
+      - name: Capture hinting comparisons
+        if: ${{ always() && steps.build.outcome == 'success' && matrix.configuration == 'Release' }}
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force out/hinting | Out-Null
+          $exe = "build/samples/compare/Release/lumatext_compare.exe"
+          foreach ($dpi in @(96, 120, 144, 192)) {
+            foreach ($filter in @('direct', 'box', 'mitchell')) {
+              foreach ($theme in @('light', 'dark')) {
+                $args = @('--snapshot', "out/hinting/$filter-$dpi-$theme.png", '--dpi', "$dpi", '--size', '14', '--filter', $filter, '--hinted')
+                if ($theme -eq 'dark') { $args += '--dark' }
+                $args += '--isolate-hint'
+                & $exe @args
+                if ($LASTEXITCODE -ne 0) { throw "snapshot failed: $filter $dpi $theme" }
+              }
+            }
+          }
+      - uses: actions/upload-artifact@v4
+        if: ${{ always() && matrix.configuration == 'Release' }}
+        with:
+          name: low-dpi-hinting-comparison
+          path: out/hinting
+          if-no-files-found: warn
       - name: Install
         run: cmake --install build --config ${{ matrix.configuration }} --prefix out/install
       - name: Verify package
@@ -129,6 +154,8 @@ jobs:
           --output out/lumatext
       - name: Install comparator dependencies
         run: python -m pip install --disable-pip-version-check numpy pillow scikit-image
+      - name: Test comparison metrics
+        run: python -W error tests/compare_reference_test.py
       - name: Compare against CoreText
         run: >-
           python tools/compare_reference.py

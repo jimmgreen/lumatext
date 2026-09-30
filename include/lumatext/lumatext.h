@@ -86,6 +86,8 @@ enum {
 enum {
   LT_RENDER_CONFIG_LINEAR_BLEND = 1u << 0,
   LT_RENDER_CONFIG_DISABLE_STEM_COMPENSATION = 1u << 1,
+  // Opt in to destination-pixel-grid hinting before any supersampling.
+  // May alter outline shape/weight; defaults remain unhinted.
   LT_RENDER_CONFIG_HINTED_OUTLINES = 1u << 2,
   // Transparent text over a caller-declared uniform, opaque background color.
   // Precomposes in linear light; invalid when background.a != 1.

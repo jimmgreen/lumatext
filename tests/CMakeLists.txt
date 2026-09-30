@@ -1,3 +1,12 @@
+add_executable(lumatext_raster_scale_test raster_scale_test.cpp)
+target_include_directories(lumatext_raster_scale_test PRIVATE ${CMAKE_SOURCE_DIR}/src)
+add_test(NAME raster_scale COMMAND lumatext_raster_scale_test)
+
+add_executable(lumatext_raster_hinting_test raster_hinting_test.cpp)
+target_include_directories(lumatext_raster_hinting_test PRIVATE ${CMAKE_SOURCE_DIR}/src)
+target_link_libraries(lumatext_raster_hinting_test PRIVATE Freetype::Freetype)
+add_test(NAME raster_hinting COMMAND lumatext_raster_hinting_test "C:/Windows/Fonts/msyh.ttc")
+
 add_executable(lumatext_abi_test abi_test.cpp)
 target_link_libraries(lumatext_abi_test PRIVATE LumaText::Core)
 target_compile_definitions(lumatext_abi_test PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)

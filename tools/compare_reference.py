@@ -7,7 +7,6 @@ import sys
 
 import numpy as np
 from PIL import Image
-from skimage.metrics import structural_similarity
 
 
 def coverage(mask_path: pathlib.Path) -> np.ndarray:
@@ -42,6 +41,27 @@ def record_key(record):
     return record["name"], record["background"], round(float(record["scale"]), 2)
 
 
+def comparable_records(manifest):
+    """Index non-fallback cases without silently discarding duplicate records."""
+    records = {}
+    for record in manifest["records"]:
+        if record.get("fallbackCase", False):
+            continue
+        key = record_key(record)
+        if key in records:
+            raise ValueError(f"duplicate comparison record: {key}")
+        records[key] = record
+    return records
+
+
+def missing_records(reference, candidate):
+    def describe(keys):
+        return [{"name": name, "background": background, "scale": scale}
+                for name, background, scale in sorted(keys)]
+    return {"missingFromLumaText": describe(reference.keys() - candidate.keys()),
+            "missingFromCoreText": describe(candidate.keys() - reference.keys())}
+
+
 def glyph_origin_errors(reference, candidate, scale):
     reference_glyphs = reference.get("glyphs", [])
     candidate_glyphs = candidate.get("glyphs", [])
@@ -61,7 +81,13 @@ def glyph_origin_errors(reference, candidate, scale):
 
 
 def raster_metrics(mask: np.ndarray):
-    """Return stable grayscale edge/halo/stem measurements for A/B reports."""
+    """Return descriptive edge/low-alpha/contiguous-run measurements.
+
+    The legacy *StrokePx names now measure contiguous core-ink runs along
+    their named scan axis, including one-pixel runs. They are not anatomical
+    stem widths: crossings and glyph shape still affect them. No whitespace
+    between disjoint runs contributes, and each run has equal weight.
+    """
     ink = mask > (1.0 / 255.0)
     if not np.any(ink):
         return {"edgeMaxAlpha": 0.0, "edgeMeanAlpha": 0.0,
@@ -75,18 +101,17 @@ def raster_metrics(mask: np.ndarray):
     edge_alpha = mask[edge]
     core = mask >= 0.5
 
-    horizontal = []
-    for row in core:
-        columns = np.flatnonzero(row)
-        if columns.size >= 2:
-            horizontal.append(float(columns[-1] - columns[0] + 1))
-    vertical = []
-    for column in core.T:
-        rows = np.flatnonzero(column)
-        if rows.size >= 2:
-            vertical.append(float(rows[-1] - rows[0] + 1))
-    horizontal_mean = float(np.mean(horizontal)) if horizontal else 0.0
-    vertical_mean = float(np.mean(vertical)) if vertical else 0.0
+    def mean_run_length(rows):
+        lengths = []
+        for row in rows:
+            transitions = np.diff(np.pad(row.astype(np.int8), (1, 1)))
+            starts = np.flatnonzero(transitions == 1)
+            ends = np.flatnonzero(transitions == -1)
+            lengths.extend(ends - starts)
+        return float(np.mean(lengths)) if lengths else 0.0
+
+    horizontal_mean = mean_run_length(core)
+    vertical_mean = mean_run_length(core.T)
     return {
         "edgeMaxAlpha": float(np.max(edge_alpha)),
         "edgeMeanAlpha": float(np.mean(edge_alpha)),
@@ -98,6 +123,9 @@ def raster_metrics(mask: np.ndarray):
 
 
 def main() -> int:
+    # Keep metric/manifest helpers usable without the optional SSIM dependency.
+    from skimage.metrics import structural_similarity
+
     parser = argparse.ArgumentParser()
     parser.add_argument("--coretext", required=True, type=pathlib.Path)
     parser.add_argument("--lumatext", required=True, type=pathlib.Path)
@@ -117,12 +145,11 @@ def main() -> int:
     if not font_identity_matches and not args.allow_font_mismatch:
         raise RuntimeError("font hashes differ between CoreText and LumaText artifacts")
 
-    core_records = {record_key(value): value for value in core_manifest["records"]
-                    if not value.get("fallbackCase", False)}
-    luma_records = {record_key(value): value for value in luma_manifest["records"]
-                    if not value.get("fallbackCase", False)}
+    core_records = comparable_records(core_manifest)
+    luma_records = comparable_records(luma_manifest)
+    coverage_gaps = missing_records(core_records, luma_records)
     results = []
-    failed = False
+    failed = any(coverage_gaps.values())
     for key in sorted(core_records.keys() & luma_records.keys()):
         core = core_records[key]
         luma = luma_records[key]
@@ -169,6 +196,17 @@ def main() -> int:
             overlays / core["image"])
 
     report = {
+        "rasterMetricsVersion": 2,
+        "rasterMetricSemantics": {
+            "horizontalStrokePx": "mean contiguous alpha>=0.5 run length along rows, including one-pixel runs",
+            "verticalStrokePx": "mean contiguous alpha>=0.5 run length along columns, including one-pixel runs",
+            "haloPixels": "count of 0<alpha<0.08 pixels; not proof of a visual halo",
+            "acceptance": "edge, halo and stroke metrics are descriptive only; existing numerical thresholds are unchanged",
+        },
+        "comparisonCoverage": {"coretextCases": len(core_records),
+                               "lumatextCases": len(luma_records),
+                               "comparedCases": len(results),
+                               **coverage_gaps},
         "thresholds": {"lineWidthPx": 0.5, "glyphOriginRMSPx": 0.2,
                        "glyphOriginMaxPx": 0.5, "coverageDifference": 0.03,
                        "ssim": 0.97},
