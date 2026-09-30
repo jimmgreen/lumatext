@@ -41,24 +41,79 @@ jobs:
         if: ${{ always() && steps.build.outcome == 'success' && matrix.configuration == 'Release' }}
         shell: pwsh
         run: |
-          New-Item -ItemType Directory -Force out/hinting | Out-Null
           $exe = "build/samples/compare/Release/lumatext_compare.exe"
-          foreach ($dpi in @(96, 120, 144, 192)) {
-            foreach ($filter in @('direct', 'box', 'mitchell')) {
-              foreach ($theme in @('light', 'dark')) {
-                $args = @('--snapshot', "out/hinting/$filter-$dpi-$theme.png", '--dpi', "$dpi", '--size', '14', '--filter', $filter, '--hinted')
-                if ($theme -eq 'dark') { $args += '--dark' }
-                $args += '--isolate-hint'
-                $process = Start-Process -FilePath (Resolve-Path $exe).Path -ArgumentList $args -Wait -PassThru
-                if ($process.ExitCode -ne 0) { throw "snapshot failed: $filter $dpi $theme (exit $($process.ExitCode))" }
+          foreach ($size in @(12, 14, 16)) {
+            New-Item -ItemType Directory -Force "out/hinting/size-$size" | Out-Null
+            foreach ($dpi in @(96, 144)) {
+              foreach ($phase in @(0, 4)) {
+                foreach ($filter in @('direct', 'box', 'mitchell')) {
+                  foreach ($theme in @('light', 'dark')) {
+                    $args = @('--snapshot', "out/hinting/size-$size/$filter-$dpi-$theme-phase$phase.png", '--dpi', "$dpi", '--size', "$size", '--phase', "$phase", '--filter', $filter, '--hinted')
+                    if ($theme -eq 'dark') { $args += '--dark' }
+                    $args += '--isolate-hint'
+                    $process = Start-Process -FilePath (Resolve-Path $exe).Path -ArgumentList $args -Wait -PassThru
+                    if ($process.ExitCode -ne 0) { throw "snapshot failed: $size $filter $dpi $theme phase$phase (exit $($process.ExitCode))" }
+                  }
+                }
               }
             }
           }
       - uses: actions/upload-artifact@v4
         if: ${{ always() && matrix.configuration == 'Release' }}
         with:
-          name: low-dpi-hinting-comparison
-          path: out/hinting
+          name: low-dpi-comparison-size-12
+          path: out/hinting/size-12
+          if-no-files-found: warn
+      - uses: actions/upload-artifact@v4
+        if: ${{ always() && matrix.configuration == 'Release' }}
+        with:
+          name: low-dpi-comparison-size-16
+          path: out/hinting/size-16
+          if-no-files-found: warn
+      - uses: actions/upload-artifact@v4
+        if: ${{ always() && matrix.configuration == 'Release' }}
+        with:
+          name: low-dpi-comparison-size-14
+          path: out/hinting/size-14
+          if-no-files-found: warn
+      - name: Capture controlled native references
+        if: ${{ always() && steps.build.outcome == 'success' && matrix.configuration == 'Release' }}
+        shell: pwsh
+        run: |
+          $exe = "build/samples/compare/Release/lumatext_compare.exe"
+          New-Item -ItemType Directory -Force out/native | Out-Null
+          foreach ($size in @(12, 14, 16)) {
+            New-Item -ItemType Directory -Force "out/native/size-$size" | Out-Null
+            foreach ($mode in @('grayscale', 'cleartype')) {
+              foreach ($dpi in @(96, 144)) {
+                foreach ($phase in @(0, 4)) {
+                  foreach ($filter in @('direct', 'mitchell')) {
+                    foreach ($theme in @('light', 'dark')) {
+                      $args = @('--snapshot', "out/native/size-$size/$mode-$filter-$dpi-$theme-phase$phase.png", '--dpi', "$dpi", '--size', "$size", '--phase', "$phase", '--filter', $filter, '--native', $mode)
+                      if ($theme -eq 'dark') { $args += '--dark' }
+                      $args += '--isolate-hint'
+                      $process = Start-Process -FilePath (Resolve-Path $exe).Path -ArgumentList $args -Wait -PassThru
+                      if ($process.ExitCode -ne 0) { throw "native snapshot failed: $mode $filter $dpi $theme (exit $($process.ExitCode))" }
+                    }
+                  }
+                }
+              }
+            }
+            foreach ($dpi in @(96, 144)) {
+              foreach ($theme in @('light', 'dark')) {
+                $args = @('--snapshot', "out/native/size-$size/linear-grayscale-mitchell-$dpi-$theme-phase0.png", '--dpi', "$dpi", '--size', "$size", '--filter', 'mitchell', '--native', 'grayscale')
+                if ($theme -eq 'dark') { $args += '--dark' }
+                $args += @('--isolate-hint', '--known-background')
+                $process = Start-Process -FilePath (Resolve-Path $exe).Path -ArgumentList $args -Wait -PassThru
+                if ($process.ExitCode -ne 0) { throw "linear snapshot failed: $dpi $theme (exit $($process.ExitCode))" }
+              }
+            }
+          }
+      - uses: actions/upload-artifact@v4
+        if: ${{ always() && matrix.configuration == 'Release' }}
+        with:
+          name: native-rendering-comparison
+          path: out/native
           if-no-files-found: warn
       - uses: actions/upload-artifact@v4
         if: ${{ always() && steps.build.outcome == 'success' && matrix.configuration == 'Release' }}

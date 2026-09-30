@@ -49,3 +49,42 @@ Debug/Release 各 10 项测试通过，包含已知背景与实色输出逐像�
 快照新增 `--hinted` 和 `--filter direct|box|mitchell`。恢复默认会关闭 hint。
 这不是已签收的视觉参数；测试步骤与本轮实际验证范围见
 [低 DPI 验证说明](low-dpi-validation.md)。
+
+## 同文件 DirectWrite 参考（仅快照）
+
+`--native grayscale|cleartype` 将左栏换成 Windows DirectWrite，右栏仍是
+指定滤波器的 LumaText；`--hinted` 只改变右栏。未指定 `--native` 时原比较
+方式和默认渲染参数不变。示例：
+
+```powershell
+lumatext_compare.exe --snapshot native-gray.png --native grayscale --dpi 96 --size 14 --filter mitchell --isolate-hint
+lumatext_compare.exe --snapshot native-ct.png --native cleartype --dpi 144 --size 14 --filter mitchell --hinted --dark --isolate-hint
+lumatext_compare.exe --snapshot native-known-bg.png --native grayscale --dpi 96 --size 14 --isolate-hint --known-background
+```
+
+- 两栏加载相同的 `msyh.ttc` / `msyhbd.ttc` face 0。DirectWrite 使用这两个
+  精确 face 构建的私有 collection，逐个实际 shaped run 验证文件、face index、
+  无模拟和无缺失字形；不依赖系统字体名去猜测 Microsoft YaHei / YaHei UI。
+- 字号、DPI、颜色、裁剪、行起点和请求基线相同。使用 DirectWrite line metrics
+  对齐 LumaText ascent，关闭 D2D 额外的垂直 origin snapping (`NO_SNAP`)；
+  原生栅格器的 grid fitting 仍保留。两套 shaping 独立，无换行/省略号，
+  因此此实验没有声称逐字 advance 或字形序列必然相同。
+- 参考图使用软件 WIC `32bppBGR` 和 `D2D1_ALPHA_MODE_IGNORE` 的不透明目标，
+  显式指定 grayscale / ClearType AA。DirectWrite gamma/contrast 取本机默认值；
+  RGB 子像素顺序和 ClearType level 1 固定，rendering mode 使用 DEFAULT。
+  这是受控 DirectWrite 参考，不代表每个应用、屏幕子像素结构或 ClearType 调校值。
+- 每张原生参考 PNG 底部附黑字白底的 grayscale / ClearType 自检条。
+  直接读取渲染结果，要求灰度条的彩色像素数为 0、ClearType 彩色像素数大于 0，
+  且两条 RGB 不同；未通过则返回非零退出码。相邻的 `.png.json` 保存计数、
+  字体身份、DPI、target alpha/transform、native AA/参数及 LumaText 配置。
+- `--isolate-hint` 将 LumaText 基础 coverage gamma 设为 0.85、光学补偿设为 0、
+  关闭已知背景线性合成。需要单独比较合成时，在它后面加 `--known-background`；
+  此标志只重新启用合成，不改变 gamma/补偿。深色的 `--dark` 应放在
+  `--isolate-hint` 前。LumaText coverage gamma 与 DirectWrite gamma 含义不同。
+
+Microsoft 文档说明非 IGNORE alpha 目标默认会退回灰度，并列出 WIC BGR 与
+IGNORE 的支持组合：[像素格式与 alpha 模式](https://learn.microsoft.com/en-us/windows/win32/direct2d/supported-pixel-formats-and-alpha-modes)。
+基线和 origin snapping 的定义见 [line metrics](https://learn.microsoft.com/en-us/windows/win32/api/dwrite/ns-dwrite-dwrite_line_metrics)
+与 [DrawText options](https://learn.microsoft.com/en-us/windows/win32/api/d2d1/ne-d2d1-d2d1_draw_text_options)。
+
+此诊断实现需通过 Windows CI 编译和像素检查；Linux 源码检查不构成原生效果验收。
