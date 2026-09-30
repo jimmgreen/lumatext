@@ -30,9 +30,9 @@ add_test(NAME render_smoke COMMAND lumatext_render_smoke)
 
 add_executable(lumatext_coretext_layout_test coretext_layout_test.cpp)
 target_link_libraries(lumatext_coretext_layout_test PRIVATE
-  LumaText::Core d2d1 windowscodecs ole32)
+  LumaText::Core lumatext_harfbuzz d2d1 windowscodecs ole32)
 target_compile_definitions(lumatext_coretext_layout_test PRIVATE
-  NOMINMAX WIN32_LEAN_AND_MEAN UNICODE _UNICODE)
+  NOMINMAX WIN32_LEAN_AND_MEAN UNICODE _UNICODE HB_STATIC)
 target_compile_options(lumatext_coretext_layout_test PRIVATE
   $<$<CXX_COMPILER_ID:MSVC>:/utf-8>)
 add_test(NAME coretext_layout COMMAND lumatext_coretext_layout_test)
