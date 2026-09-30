@@ -1,6 +1,7 @@
 #include <lumatext/lumatext.hpp>
 
 #include <d2d1.h>
+#include <dwrite_2.h>
 #include <wincodec.h>
 #include <wrl/client.h>
 
@@ -32,6 +33,7 @@ int main() {
   CHECK(SUCCEEDED(d2d->CreateWicBitmapRenderTarget(
       surface.Get(), D2D1::RenderTargetProperties(), &target)));
   target->SetDpi(144.0f, 144.0f);
+  target->SetTextAntialiasMode(D2D1_TEXT_ANTIALIAS_MODE_GRAYSCALE);
 
   auto context_desc = LumaText::Descriptor<lt_context_desc>();
   LumaText::Context context;
@@ -62,6 +64,44 @@ int main() {
   layout_desc.max_width = 160.0f;
   LumaText::TextLayout layout;
   CHECK(lt_text_layout_create(context.get(), &layout_desc, layout.put()) == LT_OK);
+
+  // Build an independent DirectWrite oracle from the same installed font.
+  // Exact layer topology varies between Segoe UI Emoji releases; no isolated
+  // 50%-alpha pixel is guaranteed when translucent palette layers overlap.
+  auto metrics = LumaText::Descriptor<lt_text_metrics>();
+  CHECK(lt_text_layout_get_metrics(layout.get(), &metrics) == LT_OK);
+  CHECK(metrics.glyph_count == 1 && metrics.run_count == 1);
+  ComPtr<IDWriteFactory2> reference_factory;
+  CHECK(SUCCEEDED(DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED,
+      __uuidof(IDWriteFactory2), reinterpret_cast<IUnknown**>(reference_factory.GetAddressOf()))));
+  ComPtr<IDWriteFontFile> reference_file;
+  CHECK(SUCCEEDED(reference_factory->CreateFontFileReference(
+      source.file_path, nullptr, &reference_file)));
+  BOOL supported = FALSE;
+  DWRITE_FONT_FILE_TYPE file_type{};
+  DWRITE_FONT_FACE_TYPE face_type{};
+  UINT32 face_count = 0;
+  CHECK(SUCCEEDED(reference_file->Analyze(&supported, &file_type, &face_type, &face_count)));
+  CHECK(supported && face_count > 0);
+  IDWriteFontFile* reference_files[] = {reference_file.Get()};
+  ComPtr<IDWriteFontFace> reference_face;
+  CHECK(SUCCEEDED(reference_factory->CreateFontFace(face_type, 1, reference_files,
+      0, DWRITE_FONT_SIMULATIONS_NONE, &reference_face)));
+  const UINT32 reference_codepoint = 0x1f600;
+  UINT16 reference_glyph = 0;
+  CHECK(SUCCEEDED(reference_face->GetGlyphIndices(&reference_codepoint, 1, &reference_glyph)));
+  CHECK(reference_glyph != 0);
+  ComPtr<IWICBitmap> reference_surface;
+  ComPtr<ID2D1RenderTarget> reference_target;
+  CHECK(SUCCEEDED(wic->CreateBitmap(240, 120, GUID_WICPixelFormat32bppPBGRA,
+      WICBitmapCacheOnLoad, &reference_surface)));
+  CHECK(SUCCEEDED(d2d->CreateWicBitmapRenderTarget(reference_surface.Get(),
+      D2D1::RenderTargetProperties(), &reference_target)));
+  reference_target->SetDpi(144.0f, 144.0f);
+  reference_target->SetTextAntialiasMode(D2D1_TEXT_ANTIALIAS_MODE_GRAYSCALE);
+  ComPtr<ID2D1SolidColorBrush> reference_brush;
+  CHECK(SUCCEEDED(reference_target->CreateSolidColorBrush(
+      D2D1::ColorF(0.0f, 0.0f, 0.0f, 1.0f), &reference_brush)));
 
   auto renderer_desc = LumaText::Descriptor<lt_d2d_desc>();
   renderer_desc.render_target = target.Get();
@@ -117,19 +157,68 @@ int main() {
     draw.foreground.a = opacity;
     CHECK(lt_frame_draw_text_layout(frame.get(), layout.get(), &draw) == LT_OK);
     CHECK(lt_frame_end(frame.get()) == LT_OK);
+
+    const FLOAT reference_advance = metrics.width;
+    const DWRITE_GLYPH_OFFSET reference_offset{};
+    const DWRITE_GLYPH_RUN reference_run{reference_face.Get(), style.font_size, 1,
+        &reference_glyph, &reference_advance, &reference_offset, FALSE, 0};
+    ComPtr<IDWriteColorGlyphRunEnumerator> reference_layers;
+    CHECK(SUCCEEDED(reference_factory->TranslateColorGlyphRun(draw.origin_x,
+        draw.origin_y + metrics.ascent, &reference_run, nullptr,
+        DWRITE_MEASURING_MODE_NATURAL, nullptr, 0, &reference_layers)));
+    CHECK(reference_layers.Get() != nullptr);
+    reference_target->BeginDraw();
+    reference_target->Clear(D2D1::ColorF(0.0f, 0.0f, 0.0f, 0.0f));
+    UINT32 reference_layer_count = 0;
+    UINT32 palette_layer_count = 0;
+    for (;;) {
+      BOOL has_layer = FALSE;
+      CHECK(SUCCEEDED(reference_layers->MoveNext(&has_layer)));
+      if (!has_layer) break;
+      const DWRITE_COLOR_GLYPH_RUN* layer = nullptr;
+      CHECK(SUCCEEDED(reference_layers->GetCurrentRun(&layer)));
+      CHECK(layer);
+      D2D1_COLOR_F color = D2D1::ColorF(draw.foreground.r, draw.foreground.g,
+                                      draw.foreground.b, opacity);
+      if (layer->paletteIndex != DWRITE_NO_PALETTE_INDEX) {
+        color = D2D1::ColorF(layer->runColor.r, layer->runColor.g,
+                            layer->runColor.b, layer->runColor.a * opacity);
+        ++palette_layer_count;
+      }
+      reference_brush->SetColor(color);
+      reference_target->DrawGlyphRun(
+          D2D1::Point2F(layer->baselineOriginX, layer->baselineOriginY),
+          &layer->glyphRun, reference_brush.Get(), DWRITE_MEASURING_MODE_NATURAL);
+      ++reference_layer_count;
+    }
+    CHECK(SUCCEEDED(reference_target->EndDraw()));
+    CHECK(reference_layer_count > 0 && palette_layer_count > 0);
+    ComPtr<IWICBitmapLock> reference_lock;
+    CHECK(SUCCEEDED(reference_surface->Lock(&area, WICBitmapLockRead, &reference_lock)));
+    UINT reference_stride = 0;
+    UINT reference_byte_count = 0;
+    BYTE* reference_pixels = nullptr;
+    CHECK(SUCCEEDED(reference_lock->GetStride(&reference_stride)));
+    CHECK(SUCCEEDED(reference_lock->GetDataPointer(&reference_byte_count, &reference_pixels)));
     CHECK(SUCCEEDED(surface->Lock(&area, WICBitmapLockRead, &lock)));
     CHECK(SUCCEEDED(lock->GetStride(&stride)));
     CHECK(SUCCEEDED(lock->GetDataPointer(&byte_count, &pixels)));
     uint64_t alpha_sum = 0;
-    bool half_opaque_color = false;
     for (int row = 0; row < 120; ++row) {
       for (int column = 0; column < 240; ++column) {
         const BYTE* pixel = pixels + static_cast<size_t>(row) * stride + column * 4;
+        const BYTE* expected = reference_pixels +
+            static_cast<size_t>(row) * reference_stride + column * 4;
+        for (int channel = 0; channel < 4; ++channel) {
+          if (pixel[channel] != expected[channel]) {
+            std::fprintf(stderr,
+                "color oracle mismatch: opacity %.2f at (%d,%d), channel %d: %u != %u\n",
+                opacity, column, row, channel,
+                static_cast<unsigned>(pixel[channel]), static_cast<unsigned>(expected[channel]));
+            return __LINE__;
+          }
+        }
         alpha_sum += pixel[3];
-        const BYTE minimum = std::min({pixel[0], pixel[1], pixel[2]});
-        const BYTE maximum = std::max({pixel[0], pixel[1], pixel[2]});
-        half_opaque_color = half_opaque_color ||
-            (pixel[3] >= 126 && pixel[3] <= 129 && maximum - minimum >= 12);
         if (opacity == 0.0f) {
           CHECK(pixel[0] == 0 && pixel[1] == 0 && pixel[2] == 0 && pixel[3] == 0);
         }
@@ -141,7 +230,6 @@ int main() {
     } else if (opacity == 0.5f) {
       // Overlapping palette layers may exceed half opacity after compositing.
       CHECK(alpha_sum > 0 && alpha_sum < opaque_alpha_sum);
-      CHECK(half_opaque_color);
     } else {
       CHECK(alpha_sum == 0);
     }

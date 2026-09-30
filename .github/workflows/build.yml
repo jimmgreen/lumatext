@@ -49,8 +49,8 @@ jobs:
                 $args = @('--snapshot', "out/hinting/$filter-$dpi-$theme.png", '--dpi', "$dpi", '--size', '14', '--filter', $filter, '--hinted')
                 if ($theme -eq 'dark') { $args += '--dark' }
                 $args += '--isolate-hint'
-                & $exe @args
-                if ($LASTEXITCODE -ne 0) { throw "snapshot failed: $filter $dpi $theme" }
+                $process = Start-Process -FilePath (Resolve-Path $exe).Path -ArgumentList $args -Wait -PassThru
+                if ($process.ExitCode -ne 0) { throw "snapshot failed: $filter $dpi $theme (exit $($process.ExitCode))" }
               }
             }
           }
@@ -60,6 +60,14 @@ jobs:
           name: low-dpi-hinting-comparison
           path: out/hinting
           if-no-files-found: warn
+      - uses: actions/upload-artifact@v4
+        if: ${{ always() && steps.build.outcome == 'success' && matrix.configuration == 'Release' }}
+        with:
+          name: low-dpi-compare-windows-x64
+          path: |
+            build/samples/compare/Release/lumatext_compare.exe
+            build/samples/compare/Release/lumatext.dll
+          if-no-files-found: error
       - name: Install
         run: cmake --install build --config ${{ matrix.configuration }} --prefix out/install
       - name: Verify package

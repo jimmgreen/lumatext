@@ -1,3 +1,7 @@
+add_executable(lumatext_script_tag_test script_tag_test.cpp)
+target_include_directories(lumatext_script_tag_test PRIVATE ${CMAKE_SOURCE_DIR}/src)
+add_test(NAME script_tag COMMAND lumatext_script_tag_test)
+
 add_executable(lumatext_raster_scale_test raster_scale_test.cpp)
 target_include_directories(lumatext_raster_scale_test PRIVATE ${CMAKE_SOURCE_DIR}/src)
 add_test(NAME raster_scale COMMAND lumatext_raster_scale_test)
@@ -35,7 +39,7 @@ add_test(NAME coretext_layout COMMAND lumatext_coretext_layout_test)
 
 add_executable(lumatext_color_glyph_test color_glyph_test.cpp)
 target_link_libraries(lumatext_color_glyph_test PRIVATE
-  LumaText::Core d2d1 windowscodecs ole32)
+  LumaText::Core d2d1 dwrite windowscodecs ole32)
 target_compile_definitions(lumatext_color_glyph_test PRIVATE
   NOMINMAX WIN32_LEAN_AND_MEAN UNICODE _UNICODE)
 target_compile_options(lumatext_color_glyph_test PRIVATE

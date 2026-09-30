@@ -84,3 +84,23 @@ c++ -std=c++20 -Wall -Wextra -Werror -pedantic -Isrc tests/raster_scale_test.cpp
 c++ -std=c++20 -Isrc $(pkg-config --cflags freetype2) tests/raster_hinting_test.cpp $(pkg-config --libs freetype2) -o raster-hinting-test
 ./raster-hinting-test /path/to/font.ttf
 ```
+
+## First Windows CI pass
+
+Commit `b278610dbcbac61511047cfcd3f9e49f9fe4e326`, run
+[36694714600](https://github.com/jimmgreen/lumatext/actions/runs/36694714600),
+built both Debug and Release successfully. Both passed the new native-hinting
+and scale tests and the extended rasterizer bounds tests. The same two failures
+already present on main remained: the `fi` hit-test span and a color-emoji test
+that required an isolated half-alpha pixel. The complete suite was not green.
+
+The CoreText comparison job passed all 50 existing cases with unchanged
+thresholds. Its 100 default rendered PNGs/masks were byte-for-byte identical to
+main commit `7e280a41e9493a12f14f8126841779da093fc019` from run 36692359115.
+That demonstrates default raster preservation for the tested matrix, not that
+hinting candidates have been visually accepted on users' monitors.
+
+The first hinting snapshot was produced, but the GUI executable exit-status
+check stopped capture after it. The follow-up workflow explicitly waits for the
+process and checks its own exit code. Timing labels in the comparison pictures
+include initialization/cache effects and must not be used as A/B benchmarks.

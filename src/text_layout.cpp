@@ -1,4 +1,5 @@
 #include "internal.hpp"
+#include "script_tag.hpp"
 
 #include <map>
 
@@ -144,7 +145,8 @@ class TextAnalysis final : public IDWriteTextAnalysisSource,
     DWRITE_SCRIPT_PROPERTIES properties{};
     hb_script_t script = HB_SCRIPT_UNKNOWN;
     if (SUCCEEDED(analyzer_->GetScriptProperties(*analysis, &properties))) {
-      script = hb_script_from_iso15924_tag(static_cast<hb_tag_t>(properties.isoScriptCode));
+      script = hb_script_from_iso15924_tag(
+          static_cast<hb_tag_t>(lt::dwrite_script_tag_to_hb(properties.isoScriptCode)));
     }
     std::fill(scripts_.begin() + position, scripts_.begin() + position + length, script);
     return S_OK;
