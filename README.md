@@ -53,4 +53,4 @@ target_link_libraries(my_app PRIVATE LumaText::D2D)
 
 在继续 D3D11 和输入模块之前，必须按 [docs/phase-1-acceptance.md](docs/phase-1-acceptance.md) 在 4K/150% 实机对比签收并冻结默认校准参数。当前 macOS-like 灰度候选基线使用未 hint 的自然轮廓，默认值为 `gamma=0.85`、`contrast=1.00`、`stem_strength=0.00px`、`filter=Mitchell`，并按 physical em 与字重执行小字号 optical gamma 校准。该值在 Gallery 的 DirectWrite 对照中降低了低覆盖边缘的增益，避免常规和粗体行出现明显偏粗；仍需在 Microsoft YaHei UI 和 Pulse 4K/150% 实机上签收后才能冻结。
 
-LumaText 自身使用 MIT 许可证。固定依赖 FreeType 使用 FTL，HarfBuzz 使用 MIT，Unicode 数据使用 Unicode License v3；完整许可文本位于 `LICENSES`。本项目不包含任何字体文件。
+LumaText 自身使用 MIT 许可证。固定依赖 FreeType 使用 FTL，HarfBuzz 使用 MIT，Unicode 数据使用 Unicode License v3；完整许可文本位于 `LICENSES`。本项目不包含第三方字体文件；合字回归测试仅使用自行生成的极简矩形字形 fixture。

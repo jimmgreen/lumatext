@@ -104,3 +104,26 @@ The first hinting snapshot was produced, but the GUI executable exit-status
 check stopped capture after it. The follow-up workflow explicitly waits for the
 process and checks its own exit code. Timing labels in the comparison pictures
 include initialization/cache effects and must not be used as A/B benchmarks.
+
+## Baseline failures diagnosed separately
+
+The script bridge passed DirectWrite's low-byte-first ISO script code directly
+to HarfBuzz's high-byte-first tag. The bridge now converts explicitly, with
+portable Latin/Arabic/Hebrew/Han/common/inherited tag tests. This is separate
+from hinting and may correctly change script shaping outside the reference matrix.
+
+Run [36696154692](https://github.com/jimmgreen/lumatext/actions/runs/36696154692)
+verified both builds, the independent DirectWrite color oracle at foreground
+opacity 1/0.5/0, all 24 comparison snapshots, and a runnable compare binary.
+CoreText passed 50/50 and the same 100 default PNGs remained byte-identical for
+this matrix. The one remaining suite failure was the installed-font fi assumption.
+
+Run [36696890113](https://github.com/jimmgreen/lumatext/actions/runs/36696890113)
+then directly shaped the runner's Segoe UI (955,804 bytes) using pinned HarfBuzz
+10.4.0. It returned separate f/i/x glyphs for ar/en/und with liga both off and on;
+LumaText matched all six cases. The font did not supply the substitution assumed
+by the test. The final regression uses an owned, 1,144-byte synthetic rectangle
+font with explicit fi GSUB, preserves the exact two-character hit-span assertions,
+and adds liga-disabled one-character spans. No Windows font is redistributed.
+Regenerate its checked-in header with `python tools/generate_ligature_test_font.py`
+and fonttools 4.61.1. The final Windows suite must still be rerun on that commit.

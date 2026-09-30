@@ -3,8 +3,7 @@
 #include <d2d1.h>
 #include <wincodec.h>
 #include <wrl/client.h>
-#include <hb.h>
-#include <hb-ot.h>
+#include "ligature_fixture.hpp"
 
 #include <cstdio>
 #include <fstream>
@@ -33,66 +32,6 @@ lt_result make_face(lt_context* context, const wchar_t* path,
   desc.source_type = LT_FONT_SOURCE_FILE;
   desc.file_path = path;
   return lt_font_face_create(context, &desc, output.put());
-}
-
-int diagnose_ligature(lt_context* context, const wchar_t* font_path,
-                      const lt_text_layout_desc& original) {
-  const auto bytes = read_bytes(font_path);
-  CHECK(!bytes.empty());
-  hb_blob_t* blob = hb_blob_create(reinterpret_cast<const char*>(bytes.data()),
-      static_cast<unsigned>(bytes.size()), HB_MEMORY_MODE_READONLY, nullptr, nullptr);
-  hb_face_t* face = hb_face_create(blob, 0);
-  hb_font_t* font = hb_font_create(face);
-  hb_ot_font_set_funcs(font);
-  hb_font_set_scale(font, 16 * 64, 16 * 64);
-  std::fprintf(stderr, "ligature diagnostics: font bytes=%zu, HB=%s\n",
-               bytes.size(), hb_version_string());
-  for (const char* language : {"ar", "en", "und"}) {
-    for (uint32_t enabled : {0u, 1u}) {
-      hb_buffer_t* buffer = hb_buffer_create();
-      hb_buffer_set_direction(buffer, HB_DIRECTION_LTR);
-      hb_buffer_set_script(buffer, HB_SCRIPT_LATIN);
-      hb_buffer_set_language(buffer, hb_language_from_string(language, -1));
-      hb_buffer_set_cluster_level(buffer, HB_BUFFER_CLUSTER_LEVEL_MONOTONE_GRAPHEMES);
-      constexpr char16_t sample[] = u"fix";
-      hb_buffer_add_utf16(buffer, reinterpret_cast<const uint16_t*>(sample), 3, 0, 3);
-      const hb_feature_t feature{HB_TAG('l', 'i', 'g', 'a'), enabled, 0, 3};
-      hb_shape(font, buffer, &feature, 1);
-      unsigned count = 0;
-      const hb_glyph_info_t* infos = hb_buffer_get_glyph_infos(buffer, &count);
-      std::fprintf(stderr, "HB lang=%s liga=%u glyphs=%u:", language, enabled, count);
-      for (unsigned index = 0; index < count; ++index) {
-        std::fprintf(stderr, " gid=%u/cluster=%u", infos[index].codepoint, infos[index].cluster);
-      }
-      std::fprintf(stderr, "\n");
-      hb_buffer_destroy(buffer);
-
-      auto desc = original;
-      const lt_open_type_feature lt_feature{0x6c696761u, enabled};
-      desc.locale = language;
-      desc.base_style.features = &lt_feature;
-      desc.base_style.feature_count = 1;
-      LumaText::TextLayout layout;
-      CHECK(lt_text_layout_create(context, &desc, layout.put()) == LT_OK);
-      auto metrics = LumaText::Descriptor<lt_text_metrics>();
-      CHECK(lt_text_layout_get_metrics(layout.get(), &metrics) == LT_OK);
-      std::fprintf(stderr, "LT lang=%s liga=%u glyphs=%u runs=%u:",
-                   language, enabled, metrics.glyph_count, metrics.run_count);
-      for (uint32_t position = 0; position < 3; ++position) {
-        auto hit = LumaText::Descriptor<lt_hit_test_metrics>();
-        float x = 0, y = 0;
-        CHECK(lt_text_layout_hit_test_position(layout.get(), position, false,
-            &x, &y, &hit) == LT_OK);
-        std::fprintf(stderr, " pos=%u/span=%u+%u/x=%.4f",
-                     position, hit.text_position, hit.text_length, x);
-      }
-      std::fprintf(stderr, "\n");
-    }
-  }
-  hb_font_destroy(font);
-  hb_face_destroy(face);
-  hb_blob_destroy(blob);
-  return 0;
 }
 
 int run() {
@@ -226,15 +165,34 @@ int run() {
         &hit_x, &hit_y, &hit) == LT_OK);
     CHECK(std::abs(hit_x - (rtl ? 0.0f : metrics.width)) < 0.01f);
   }
+  // Installed Segoe UI versions need not provide an fi GSUB substitution.
+  // This owned fixture guarantees one, so the cluster assertion tests our
+  // hit-test mapping instead of depending on the runner's font version.
+  auto fixture_desc = LumaText::Descriptor<lt_font_source_desc>();
+  fixture_desc.source_type = LT_FONT_SOURCE_MEMORY;
+  fixture_desc.memory_data = lt_test::ligature_font;
+  fixture_desc.memory_size = sizeof(lt_test::ligature_font);
+  LumaText::FontFace fixture_face;
+  CHECK(lt_font_face_create(context.get(), &fixture_desc, fixture_face.put()) == LT_OK);
+  const lt_font_cascade_entry fixture_entry{fixture_face.get(), 400, 0};
+  auto fixture_cascade_desc = LumaText::Descriptor<lt_font_cascade_desc>();
+  fixture_cascade_desc.entries = &fixture_entry;
+  fixture_cascade_desc.entry_count = 1;
+  fixture_cascade_desc.allow_system_fallback = false;
+  LumaText::FontCascade fixture_cascade;
+  CHECK(lt_font_cascade_create(context.get(), &fixture_cascade_desc, fixture_cascade.put()) == LT_OK);
+  layout_desc.base_style.cascade = fixture_cascade.get();
+  layout_desc.locale = "en-US";
   const lt_open_type_feature liga{0x6c696761u, 1};
   layout_desc.text = L"fix";
   layout_desc.text_length = 3;
   layout_desc.direction = LT_TEXT_DIRECTION_LTR;
   layout_desc.base_style.features = &liga;
   layout_desc.base_style.feature_count = 1;
-  CHECK(diagnose_ligature(context.get(), regular_path, layout_desc) == 0);
   LumaText::TextLayout ligature_layout;
   CHECK(lt_text_layout_create(context.get(), &layout_desc, ligature_layout.put()) == LT_OK);
+  CHECK(lt_text_layout_get_metrics(ligature_layout.get(), &metrics) == LT_OK);
+  CHECK(metrics.glyph_count == 2 && metrics.run_count == 1);
   CHECK(lt_text_layout_hit_test_position(ligature_layout.get(), 0, false,
       &hit_x, &hit_y, &hit) == LT_OK);
   CHECK(hit.text_position == 0 && hit.text_length == 2);
@@ -242,6 +200,20 @@ int run() {
   CHECK(lt_text_layout_hit_test_position(ligature_layout.get(), 1, false,
       &hit_x, &hit_y, &hit) == LT_OK);
   CHECK(hit.text_position == 0 && hit.text_length == 2 && hit_x == ligature_x);
+  CHECK(lt_text_layout_hit_test_position(ligature_layout.get(), 2, false,
+      &hit_x, &hit_y, &hit) == LT_OK);
+  CHECK(hit.text_position == 2 && hit.text_length == 1 && hit_x > ligature_x);
+  const lt_open_type_feature liga_off{0x6c696761u, 0};
+  layout_desc.base_style.features = &liga_off;
+  LumaText::TextLayout unligated_layout;
+  CHECK(lt_text_layout_create(context.get(), &layout_desc, unligated_layout.put()) == LT_OK);
+  CHECK(lt_text_layout_get_metrics(unligated_layout.get(), &metrics) == LT_OK);
+  CHECK(metrics.glyph_count == 3 && metrics.run_count == 1);
+  for (uint32_t position = 0; position < 3; ++position) {
+    CHECK(lt_text_layout_hit_test_position(unligated_layout.get(), position, false,
+        &hit_x, &hit_y, &hit) == LT_OK);
+    CHECK(hit.text_position == position && hit.text_length == 1);
+  }
 
   if (GetFileAttributesW(L"C:\\Windows\\Fonts\\msyh.ttc") != INVALID_FILE_ATTRIBUTES) {
     LumaText::FontFace ttc;
