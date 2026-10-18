@@ -1,0 +1,65 @@
+name: Build Windows ARM64
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main ]
+
+jobs:
+  build-arm64:
+    runs-on: windows-2022
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup MSVC ARM64 Environment
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: amd64_arm64
+
+      - name: Configure CMake for ARM64
+        run: |
+          cmake -S . -B build-arm64 -G Ninja `
+            -DCMAKE_BUILD_TYPE=Release `
+            -DCMAKE_SYSTEM_NAME=Windows `
+            -DCMAKE_SYSTEM_PROCESSOR=ARM64 `
+            -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded `
+            -DLUMATEXT_BUILD_SHARED=ON `
+            -DLUMATEXT_BUILD_STATIC=ON `
+            -DLUMATEXT_BUILD_SAMPLES=OFF `
+            -DLUMATEXT_BUILD_TESTS=OFF `
+            -DCMAKE_INSTALL_PREFIX=out/install
+
+      - name: Build LumaText ARM64
+        run: |
+          cmake --build build-arm64 --target lumatext_shared lumatext_static --parallel 4
+
+      - name: Install LumaText ARM64
+        run: |
+          cmake --install build-arm64 --prefix out/install
+
+      - name: Package ARM64 SDK
+        shell: pwsh
+        run: |
+          $dist = "dist/lumatext-arm64"
+          New-Item -ItemType Directory -Path "$dist/bin", "$dist/lib", "$dist/include/lumatext", "$dist/licenses" -Force | Out-Null
+          Copy-Item -Path "build-arm64/lumatext.dll" -Destination "$dist/bin/lumatext.dll" -Force
+          Copy-Item -Path "build-arm64/lumatext.lib" -Destination "$dist/lib/lumatext.lib" -Force
+          if (Test-Path "build-arm64/lumatext.pdb") {
+            Copy-Item -Path "build-arm64/lumatext.pdb" -Destination "$dist/bin/lumatext.pdb" -Force
+          }
+          Copy-Item -Path "include/lumatext/*" -Destination "$dist/include/lumatext" -Recurse -Force
+          Copy-Item -Path "LICENSES/*" -Destination "$dist/licenses" -Recurse -Force
+          Copy-Item -Path "LICENSE" -Destination "$dist/licenses/LICENSE" -Force
+
+          # Create SDK zip
+          New-Item -ItemType Directory -Path "dist/release" -Force | Out-Null
+          Compress-Archive -Path "$dist\*" -DestinationPath "dist/release/lumatext-windows-arm64.zip" -Force
+          Write-Host "Created dist/release/lumatext-windows-arm64.zip"
+
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: LumaText-Windows-ARM64
+          path: dist/release/lumatext-windows-arm64.zip
+          retention-days: 30
